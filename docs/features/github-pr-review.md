@@ -32,11 +32,29 @@ Supported forges:
 | :--- | :--- | :--- |
 | GitHub | `github.com/<owner>/<repo>/pull/<n>` | |
 | GitLab | `<host>/<group>[/<subgroup>...]/<project>/-/merge_requests/<n>` | gitlab.com or any self-hosted instance; nested groups are supported |
+| Gitea / Forgejo | `<host>/<owner>/<repo>/pulls/<n>` | Codeberg, gitea.com, or any self-hosted instance |
+| Bitbucket Cloud | `bitbucket.org/<workspace>/<repo>/pull-requests/<n>` | Bitbucket Data Center / Server is not supported |
 
-Everything in this document works the same on both: diffs, comments, review verdicts, the conflict-resolution flow, and merging. GitLab differs in a few places:
+Everything in this document works the same on all of them: diffs, comments, review verdicts, the conflict-resolution flow, and merging. Each forge differs in a few places, listed below.
+
+**GitLab**
 - **Review submission**: GitLab has no single call for submitting a review. Each draft becomes a diff thread, and the summary becomes a comment. **Approve** uses GitLab's approval, pinned to the commit you reviewed. **Request Changes** posts a "Changes requested" comment and withdraws your approval, if you had given one. A draft on an unchanged context line, which GitLab can't anchor from the data px0 has, is posted as a comment that names the `path:line`.
 - **Merge methods** follow the project's settings. A project that uses merge commits (including semi-linear history) offers **Create a merge commit**. A project that uses fast-forward merges offers **Rebase and merge**, which lands the commits as they are. **Squash and merge** is offered unless squashing is disabled, and it is the only option when the project requires squashing. When the project requires a rebase first, the pill reads *Behind main*, and **Update branch** runs the agent rebase.
 - **Threads**: general comment threads show as a flat list in the Conversation section.
+
+**Gitea / Forgejo**
+- **Review submission** works like GitHub's: one review that carries every draft and the verdict.
+- **Replies**: Gitea's API has no reply-to-comment call. A reply is a new comment on the same line, which Gitea's own UI shows in the same conversation. Gitea doesn't report which side of the diff a comment is on, so existing comments are shown on the new side.
+- **Merge status** is only "mergeable or not". Draft PRs are recognized by their title prefix (`WIP:`, `Draft:`, ...). Branch protection isn't reported in advance; it shows up as the merge being refused, with Gitea's reason.
+- **Merge methods** follow the repository settings. When rebase is disabled but fast-forward-only is enabled, **Rebase and merge** uses fast-forward-only.
+
+**Bitbucket Cloud**
+- **Checkout**: Bitbucket publishes no ref for a PR head, so px0 clones the source branch, from the fork when there is one, even inside a local clone.
+- **Review submission**: each draft is posted as an inline comment and the summary as a comment. **Approve** and **Request Changes** use Bitbucket's own approval and request-changes states. Replies are threaded natively.
+- **Merge status**: conflicts are detected from the PR's diffstat. Merge checks such as required approvals or builds aren't reported in advance; they show up as the merge being refused, with Bitbucket's reason.
+- **Merge methods** come from the destination branch's allowed strategies: merge commit, squash, and rebase (`rebase_fast_forward`, or `fast_forward` if that's all that's allowed).
+- **Head check**: Bitbucket's merge call can't be pinned to a commit, so px0 re-reads the PR head just before merging and refuses if it moved. A push in the moment between the check and the merge isn't caught.
+- **Tokens**: an access token (repository, project or workspace) or an Atlassian API token plus the account email. Only an API token can check push access, so **Approve** and **Merge** stay hidden with an access token.
 
 > [!NOTE]
 > Bare PR numbers (e.g. `px0 123`) and the `px0 pr` subcommand have been deprecated in favor of explicit URL routing (`px0 <url>`). Running `px0 pr` provides a helpful reminder to pass the URL directly.
@@ -139,6 +157,16 @@ px0 discovers forge credentials in the following order.
 
 The first two are sent only to gitlab.com, or to the instance named by `GITLAB_HOST` (glab's own convention) when it is set. A merge request URL can name any host, so a token is never sent to a host it wasn't configured for. Other self-hosted instances use the token glab stored for them.
 
+**Gitea / Forgejo**
+1. **`gitea.token`** in px0 Settings (→ Gitea).
+2. **`GITEA_TOKEN`** environment variable.
+
+Both are sent only to `gitea.host` (Settings), else `GITEA_HOST`, else codeberg.org.
+
+**Bitbucket Cloud**
+1. **`bitbucket.token`** in px0 Settings (→ Bitbucket), with **`bitbucket.email`** set when it is an Atlassian API token.
+2. **`BITBUCKET_TOKEN`** environment variable, with `BITBUCKET_EMAIL` for an API token.
+
 ### Unauthenticated & Read-Only Access
 If no token is configured:
 - Public repositories still check out and diff seamlessly.
@@ -153,7 +181,7 @@ If no token is configured:
 ## Extensible Forge Architecture (`GitProvider`)
 
 px0 abstracts forge interactions through a clean, minimal `GitProvider` interface in [`provider.go`](file:///home/arpit/workspace/px0/px0/provider.go):
-- **Provider Detection**: Matches input URLs against registered providers (GitHub and GitLab today).
+- **Provider Detection**: Matches input URLs against registered providers (GitHub, GitLab, Gitea/Forgejo, Bitbucket Cloud).
 - **Normalized Metadata**: Maps forge-specific PR/MR objects to standard `PRMeta` structures.
 - **Push Access & Token Discovery**: Isolates provider-specific authentication mechanisms.
 - **Git Transport**: Each provider supplies the clone URL, the ref its PR heads are published under, and how git authenticates, so checkout, pull, push, and rebase are forge-neutral.

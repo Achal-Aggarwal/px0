@@ -65,9 +65,11 @@ px0 .
 px0 ~/workspace/project
 px0 main.go:42
 
-# Review a GitHub pull request or a GitLab merge request (gitlab.com or self-hosted)
+# Review a pull request: GitHub, GitLab, Gitea/Forgejo/Codeberg, or Bitbucket Cloud
 px0 https://github.com/owner/repo/pull/123
 px0 https://gitlab.com/group/project/-/merge_requests/45
+px0 https://codeberg.org/owner/repo/pulls/7
+px0 https://bitbucket.org/workspace/repo/pull-requests/9
 
 # Remote or headless server mode
 px0 -host 0.0.0.0 -port 7777 ~/workspace

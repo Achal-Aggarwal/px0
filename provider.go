@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -212,6 +213,20 @@ type GitProvider interface {
 var defaultProviders = []GitProvider{
 	&GitHubProvider{},
 	&GitLabProvider{},
+	&BitbucketProvider{},
+	// Last: its URL shape (host/owner/repo/pulls/N) is the loosest.
+	&GiteaProvider{},
+}
+
+// sortComments orders comments oldest first (ID breaking ties), the order
+// threads are built in.
+func sortComments(cs []PRComment) {
+	sort.SliceStable(cs, func(i, j int) bool {
+		if cs[i].CreatedAt != cs[j].CreatedAt {
+			return cs[i].CreatedAt < cs[j].CreatedAt
+		}
+		return cs[i].ID < cs[j].ID
+	})
 }
 
 // ForgeForRemote returns the provider a git remote URL belongs to, or nil.
@@ -284,4 +299,4 @@ func ParsePRURL(rawURL string) (GitProvider, PRTarget, error) {
 }
 
 // prURLExamples is the URL shapes px0 opens, for error messages.
-const prURLExamples = "https://github.com/owner/repo/pull/123 or https://gitlab.com/group/project/-/merge_requests/45"
+const prURLExamples = "https://github.com/owner/repo/pull/123, https://gitlab.com/group/project/-/merge_requests/45, https://codeberg.org/owner/repo/pulls/7, or https://bitbucket.org/workspace/repo/pull-requests/9"

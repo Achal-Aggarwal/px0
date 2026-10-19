@@ -34,6 +34,10 @@ type settings struct {
 	TelemetryEnabled            *bool    `json:"telemetry.enabled,omitempty"`
 	GitHubToken                 *string  `json:"github.token,omitempty"`
 	GitLabToken                 *string  `json:"gitlab.token,omitempty"`
+	GiteaToken                  *string  `json:"gitea.token,omitempty"`
+	GiteaHost                   *string  `json:"gitea.host,omitempty"`
+	BitbucketToken              *string  `json:"bitbucket.token,omitempty"`
+	BitbucketEmail              *string  `json:"bitbucket.email,omitempty"`
 	GitCommitMessageInstruction *string  `json:"git.commitMessageInstruction,omitempty"`
 	ServerBasePath              *string  `json:"server.basePath,omitempty"`
 	ExplorerAutoReveal          *bool    `json:"explorer.autoReveal,omitempty"`
@@ -371,6 +375,40 @@ var settingsSchema = []settingSchemaItem{
 		Type:        "string",
 		Default:     "",
 		Secret:      true,
+	},
+	{
+		Key:         "gitea.token",
+		Title:       "Gitea Token",
+		Description: "Access token (repository and issue read/write scopes) for Gitea, Forgejo or Codeberg pull request review. Sent only to the Gitea Host below. Takes precedence over the GITEA_TOKEN environment variable.",
+		Category:    "Gitea",
+		Type:        "string",
+		Default:     "",
+		Secret:      true,
+	},
+	{
+		Key:         "gitea.host",
+		Title:       "Gitea Host",
+		Description: "The Gitea or Forgejo instance the Gitea token belongs to (e.g. gitea.example.com). Pull requests on any other host are opened without it. Falls back to GITEA_HOST, then codeberg.org.",
+		Category:    "Gitea",
+		Type:        "string",
+		Default:     "",
+	},
+	{
+		Key:         "bitbucket.token",
+		Title:       "Bitbucket Token",
+		Description: "Bitbucket Cloud token for pull request review: a repository, project or workspace access token, or an Atlassian API token (then also set Bitbucket Email). Takes precedence over the BITBUCKET_TOKEN environment variable.",
+		Category:    "Bitbucket",
+		Type:        "string",
+		Default:     "",
+		Secret:      true,
+	},
+	{
+		Key:         "bitbucket.email",
+		Title:       "Bitbucket Email",
+		Description: "The Atlassian account email an API token belongs to. Leave empty when Bitbucket Token is an access token. Falls back to BITBUCKET_EMAIL. Checking push access (and so Approve and Merge) needs an API token.",
+		Category:    "Bitbucket",
+		Type:        "string",
+		Default:     "",
 	},
 	{
 		Key:         "server.basePath",
