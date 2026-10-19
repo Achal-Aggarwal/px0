@@ -3124,6 +3124,14 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
 .pr-merge-commit-list code { font: 11px var(--mono); color: var(--accent-fg); }
 .pr-merge-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 
+/* ---------- Connect dialog (web/src/forgeconnect.js) ---------- */
+.forge-connect-dialog { width: min(520px, 94vw); }
+.forge-connect-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; line-height: 1.45; }
+.forge-connect-extra { display: flex; flex-direction: column; gap: 5px; }
+.forge-connect-extra[hidden] { display: none; }
+.forge-connect-dialog .pr-merge-note code { font: 11px var(--mono); color: var(--fg); }
+.forge-connect-dialog .pr-merge-note:empty { display: none; }
+
 
 /* ---------- threads: long-running conversations in the right sidebar ---------- */
 .thr-tab-dot {

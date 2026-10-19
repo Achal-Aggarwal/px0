@@ -1,6 +1,12 @@
 # Git Forge PR Review & Provider Architecture
 
-This document describes the design and implementation of px0's pull request review feature: the `GitProvider` abstraction layer ([`provider.go`](../../provider.go)), GitHub REST implementation ([`github.go`](../../github.go)), checkout lifecycle and progress reporting ([`pr.go`](../../pr.go)), merge-base diffing ([`git.go`](../../git.go)), and the frontend review interface ([`web/src/pr.js`](../../web/src/pr.js), [`web/src/linecomment.js`](../../web/src/linecomment.js)).
+This document describes the design and implementation of px0's pull request review feature:
+- the `GitProvider` abstraction layer ([`provider.go`](../../provider.go)) and its implementations for GitHub ([`github.go`](../../github.go)), GitLab ([`gitlab.go`](../../gitlab.go)), Gitea / Forgejo ([`gitea.go`](../../gitea.go)) and Bitbucket Cloud ([`bitbucket.go`](../../bitbucket.go)), with the HTTP plumbing the last two share ([`forgehttp.go`](../../forgehttp.go));
+- connecting a forge token from the UI ([`forgeconnect.go`](../../forgeconnect.go));
+- the checkout lifecycle, push/pull, merging and progress reporting ([`pr.go`](../../pr.go)), and merge-base diffing ([`git.go`](../../git.go));
+- the frontend: the review bar and comments ([`web/src/pr.js`](../../web/src/pr.js), [`web/src/linecomment.js`](../../web/src/linecomment.js)), merging ([`web/src/prmerge.js`](../../web/src/prmerge.js)), and the Connect dialog ([`web/src/forgeconnect.js`](../../web/src/forgeconnect.js)).
+
+For the user-facing behaviour, see [Pull Request Review](../features/github-pr-review.md) and [Getting Started](../features/pr-review-getting-started.md).
 
 ---
 
@@ -8,7 +14,7 @@ This document describes the design and implementation of px0's pull request revi
 
 Two core px0 tenets shape pull request reviews:
 
-- **Zero-dependency shell-out**: Like `git.go` (which links no Go git library), px0 avoids external forge SDKs. `github.go` uses standard Go `net/http` against the GitHub REST API, plus an optional shell-out to `gh auth token`. Checkout itself uses standard `git fetch`, `git worktree add`, or `git clone` via `exec.Command`.
+- **Zero-dependency shell-out**: Like `git.go` (which links no Go git library), px0 avoids external forge SDKs. Every provider uses standard Go `net/http` against its forge's REST API, plus an optional shell-out to the forge's CLI for a token (`gh auth token`, `glab config get token`). Checkout itself uses standard `git fetch`, `git worktree add`, or `git clone` via `exec.Command`.
 - **Stateless on disk**: px0 maintains no persistent cache in `~/.px0`. A PR checkout is strictly process-scoped: `checkoutPR` (`pr.go`) places the worktree in `os.MkdirTemp("", "px0-pr-*")`, and `prSession.Close` removes it upon exit (`Ctrl+C` or normal shutdown). This ensures zero leftover disk clutter and prevents stale cache bugs.
 - **Persisted draft comments**: Draft comments live in `prSession.comments` as a thread-safe, mutex-guarded slice in server memory. Every add, delete and submit also writes them to the workspace session file (see [§6](#6-draft-comments-submission--batch-apply)), so unsubmitted drafts survive a restart of the same review.
 
@@ -16,7 +22,7 @@ Two core px0 tenets shape pull request reviews:
 
 ## 2. Extensible Forge Architecture (`GitProvider`)
 
-To support multiple git forges (GitHub, GitLab, Bitbucket, etc.) without entangling core review logic, forge interactions are abstracted behind the `GitProvider` interface in [`provider.go`](../../provider.go):
+To support multiple git forges (GitHub, GitLab, Gitea/Forgejo and Bitbucket Cloud today) without entangling core review logic, forge interactions are abstracted behind the `GitProvider` interface in [`provider.go`](../../provider.go):
 
 ```go
 type GitProvider interface {
@@ -24,6 +30,7 @@ type GitProvider interface {
     MatchURL(rawURL string) bool
     ParseURL(rawURL string) (PRTarget, error)
     Info() ForgeInfo                                  // label and token setting, for the UI
+    TokenSetup(host string) TokenSetup                // how to create a token on host, for the Connect dialog
     MatchRemote(remoteURL string) bool                // which forge a plain workspace's remote is on
     CloneURL(target PRTarget) string                  // https clone URL of the base repository
     PRHeadRef(target PRTarget) string                 // refs/pull/N/head, refs/merge-requests/N/head, or ""
@@ -75,7 +82,7 @@ Pull requests are opened exclusively via `px0 <url>`. URL routing in `main.go` c
 ```go
 provider, target, ok := DetectPRURL(arg0)
 ```
-- Iterates over `defaultProviders` (which includes `&GitHubProvider{}`).
+- Iterates over `defaultProviders` in order: GitHub, GitLab, Bitbucket, then Gitea last, because its `<host>/<owner>/<repo>/pulls/<n>` pattern is the loosest. Each provider's URL shape is distinct (`/pull/`, `/-/merge_requests/`, `/pull-requests/`, `/pulls/`), and `TestForgeURLRouting` pins every shape to its provider.
 - If a provider matches and successfully parses the URL, px0 enters PR review mode.
 - Bare numbers (e.g. `px0 123`) and file paths are never mistaken for PR targets; they are processed as regular filesystem paths.
 - Running `px0 pr` outputs an explicit error guiding the user to pass the URL directly.
@@ -90,19 +97,19 @@ provider, target, ok := DetectPRURL(arg0)
 sequenceDiagram
     participant CLI as CLI (main.go)
     participant PR as PR Engine (pr.go)
-    participant Prov as GitProvider (github.go)
+    participant Prov as GitProvider (github.go, gitlab.go, ...)
     participant Git as Host Git CLI
 
     CLI->>PR: checkoutPR(ctx, provider, target, cwd, onProgress)
-    PR->>Prov: ResolveToken(cfg)
+    PR->>Prov: ResolveToken(cfg, target)
     PR->>Prov: FetchPR(ctx, target, token)
     Prov-->>PR: PRMeta (title, refs, state, merged)
     PR->>Git: Local clone exists? (git remote get-url origin)
-    alt Matches Origin
-        PR->>Git: git fetch refs/pull/n/head:refs/px0/pr/n
+    alt Local clone, and the forge has a PR head ref
+        PR->>Git: git fetch <PRHeadRef>:refs/px0/pr/n
         PR->>Git: git worktree add --detach <tmp> refs/px0/pr/n
-    else External / Fork
-        PR->>Git: git clone --filter=blob:none --branch <headRef> <tmp>
+    else No clone, or no PR head ref (Bitbucket)
+        PR->>Git: git clone --filter=blob:none --branch <headRef> <head repo> <tmp>
     end
     PR->>Git: git fetch refs/heads/<baseRef> & git merge-base HEAD
     PR->>Prov: CheckPushAccess(ctx, target, token)
@@ -123,25 +130,57 @@ When `meta.Merged` is true, px0 does not block or prompt: it proceeds immediatel
 
 ## 4. Authentication & Push Access
 
-`GitHubProvider.ResolveToken` queries four sources in order:
-1. `github.token` in `settings.json` (or via Settings modal).
-2. `GITHUB_TOKEN` environment variable.
-3. `GH_TOKEN` environment variable.
-4. `gh auth token` (GitHub CLI session).
+### Token resolution
+
+Each provider's `ResolveToken(cfg, target)` checks px0 Settings, then the environment, then the forge's CLI. The first match wins:
+
+| Provider | Settings | Environment | CLI | Host scoping |
+| :--- | :--- | :--- | :--- | :--- |
+| GitHub | `github.token` | `GITHUB_TOKEN`, `GH_TOKEN` | `gh auth token` | single host |
+| GitLab | `gitlab.token` | `GITLAB_TOKEN` | `glab config get token --host <host>` | settings and env go only to `gitlabTokenHost()`: `gitlab.host`, else `GITLAB_HOST`, else gitlab.com |
+| Gitea | `gitea.token` | `GITEA_TOKEN` | — | only to `giteaTokenHost()`: `gitea.host`, else `GITEA_HOST`, else codeberg.org |
+| Bitbucket | `bitbucket.token` (+ `bitbucket.email`) | `BITBUCKET_TOKEN` (+ `BITBUCKET_EMAIL`) | — | single host |
+
+Host scoping matters because a PR URL can name any host. Without it, a crafted link to `evil.example/-/merge_requests/1` would receive the user's gitlab.com token. glab's tokens are already stored per host, so they need no extra scoping. `checkoutPR` keeps the token and where it came from (`prSession.tokenSource`).
+
+### Connecting from the UI (`forgeconnect.go`)
+
+`/api/meta` carries `forge`, built by `forgeMeta()`: the provider's `Info`, the host, `hasToken` and `source`, and `TokenSetup(host)`. That is the token page URL, the steps to follow there, the environment variable and CLI alternatives, the `HostKey` setting for multi-host forges, and an optional `Extra` field (Bitbucket's email). In a PR session the forge is the PR's. In a plain workspace it is whichever forge `ForgeForRemote` recognizes from the branch's remote. `web/src/forgeconnect.js` renders it with no forge-specific code of its own.
+
+`POST /api/forge/connect {token, extra}` (`handleForgeConnect`):
+1. Writes the token setting (plus `Extra.Key`, and `HostKey` = the target host) with `updateSettingsMap`. The exception: a token is already saved for this forge, `HostKey` is set, and `ResolveToken` doesn't return that saved token for this host, meaning it belongs to another instance. Then nothing is written and the token is used for the session only (`saved: false`).
+2. In a PR session, checks the token with `FetchPR`. A rejected token restores the previous setting values and returns 400, with the token redacted from the forge's error.
+3. On success, updates `prSession.token`, `tokenSource` and `writeAccess` (`CheckPushAccess`) in place, so the review gains write access without a restart. The frontend emits `forge:connected`, and `pr.js` re-reads `/api/pr/meta` and the merge status.
+
+In a plain workspace there is no PR to check against, so the token is saved unchecked (`validated: false`).
 
 ### Fail-Closed Push Access
-`CheckPushAccess` queries `GET /repos/{owner}/{repo}` and extracts `permissions.push`. It **fails closed**: any network error, HTTP error, or missing permission field yields `false`.
-- Gating: `Server.handlePRMeta` passes `writeAccess` to the frontend.
-- Enforcement: `Server.handlePRSubmit` enforces push access server-side before accepting `APPROVE` or `REQUEST_CHANGES`.
+`CheckPushAccess` fails closed for every provider: any network error, HTTP error, or missing permission field yields `false`.
+- GitHub: `GET /repos/{owner}/{repo}` → `permissions.push`.
+- GitLab: project or group `access_level` ≥ 30 (Developer).
+- Gitea: `GET /repos/{owner}/{repo}` → `permissions.push`.
+- Bitbucket: `/user/permissions/repositories` → `write` or `admin`. Only an API token can call this endpoint, so an access token always reads as no push access.
+
+Gating: `Server.handlePRMeta` passes `writeAccess` to the frontend. Enforcement: `Server.handlePRSubmit` checks push access server-side before accepting `APPROVE` or `REQUEST_CHANGES`, and `handlePRMerge` before merging.
 
 ### Unauthenticated Read-Only Mode
 If no token is found:
 - Public repository metadata, worktree creation, and diff calculation proceed normally.
 - Draft comments can be created locally and batch-applied with AI agents.
-- The CLI banner alerts the user:
+- The CLI banner names the forge and where a token would be found (`Info().TokenHint`), for example:
   ```text
   access: read-only (no GitHub token: set GITHUB_TOKEN, set GH_TOKEN, or run `gh auth login` to submit reviews)
   ```
+
+### Adding a forge
+
+A new forge is one file implementing `GitProvider`, plus its settings:
+1. URL matching (`MatchURL`, `ParseURL`) with a pattern that can't match another forge's URLs. Add it to `TestForgeURLRouting`.
+2. Git transport (`CloneURL`, `PRHeadRef`, `GitAuth`), and `MatchRemote` for plain workspaces.
+3. Tokens: `ResolveToken` with host scoping if the forge can be self-hosted, `Info`, and `TokenSetup`. Add its settings to `settingsSchema`, which `TestTokenSetupPerForge` checks.
+4. The API methods, mapping onto `PRMeta`, `PRComment`, the `MergeState*` values and the `MergeMethod*` values, and wrapping `ErrPRHeadMoved` / `ErrPRNotMergeable` in `Merge`.
+5. Registration in `defaultProviders`, before Gitea unless its URL pattern is looser still.
+6. Tests against a fake API server, like `gitlab_test.go` and `forges_test.go`.
 
 ---
 
@@ -193,7 +232,7 @@ The worktree `checkoutPR` produces sits on a **detached** `HEAD` at `refs/px0/pr
 ### `prSession.Pull`: Fast-Forward Only, Same as Everywhere Else
 
 1. Refuses immediately if `gitHasUncommittedChanges(worktree)` — nothing here stashes.
-2. Re-fetches the PR head: `git fetch origin refs/pull/<N>/head:refs/px0/pr/<N>` in the worktree case (shared refs with `srcRepo`, same as the initial checkout), or a direct fetch of `meta.HeadRepoCloneURL`/`meta.HeadRef` into `FETCH_HEAD` in the bare-clone case.
+2. Re-fetches the PR head: `git fetch origin <PRHeadRef>:refs/px0/pr/<N>` in the worktree case (shared refs with `srcRepo`, same as the initial checkout), or a direct fetch of `meta.HeadRepoCloneURL`/`meta.HeadRef` into `FETCH_HEAD` in the bare-clone case.
 3. `git merge-base --is-ancestor <newRef> HEAD` — if the fetched ref is already an ancestor of the current checkout, it's a no-op ("already up to date"), not an error.
 4. `git merge-base --is-ancestor HEAD <newRef>` — if the current checkout is a clean ancestor of the fetched ref, `git reset --hard <newRef>` fast-forwards it (safe: step 1 already guaranteed a clean working tree).
 5. Otherwise — a local commit the PR head doesn't have, or a force-pushed head that isn't a fast-forward at all — `errPRDiverged` refuses the pull. Exactly like the plain-workspace path, this never invokes `git merge`, so there is never a real conflict to clean up.
@@ -228,7 +267,7 @@ The git panel's agent rebase/merge flow ([git-integration internals](git-integra
 
 - **Hover Line Thread Icon (`web/src/linecomment.js`)**:
   - Displays a thread icon (a CSS-masked speech bubble on `.line-btn`) when hovering over line numbers in source or diff views.
-  - Clicking calls `openLineMenu()` in `selbar.js`, the selection menu aimed at one line. Rows GitHub knows about pass a `fromDiff` description with the diff side, which is what enables **Add Review Comment** there; other rows get only the local actions.
+  - Clicking calls `openLineMenu()` in `selbar.js`, the selection menu aimed at one line. Rows that are part of the PR's diff pass a `fromDiff` description with the diff side, which is what enables **Add Review Comment** there; other rows get only the local actions.
 - **PR Header Bar (`web/src/pr.js`)**:
   - Renders PR number, title, author, branch refs, and draft count badge.
   - Toggles `#pr-merged-badge` (purple pill) when `meta.merged` is true.

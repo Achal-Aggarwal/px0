@@ -36,6 +36,7 @@ type prSession struct {
 	target          PRTarget
 	meta            PRMeta
 	token           string
+	tokenSource     string // where token came from: settings, env, gh, glab, session ("" with no token)
 	writeAccess     bool
 	diffBase        string // merge-base(head, base branch), or "HEAD" if the base couldn't be resolved
 	diffBaseWarning string // set when diffBase fell back to "HEAD"; surfaced in the UI so an empty diff doesn't read as "no changes"
@@ -166,7 +167,7 @@ func fetchPRBase(worktree, srcRepo, srcRemote string, fg forgeGit, baseRef strin
 // unrelated directory).
 func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd string, onProgress func(string)) (*prSession, error) {
 	cfg := readSettings()
-	token, _ := provider.ResolveToken(cfg, target)
+	token, tokenSource := provider.ResolveToken(cfg, target)
 
 	if onProgress != nil {
 		onProgress(fmt.Sprintf("Fetching PR #%d metadata from %s...", target.Number, provider.Name()))
@@ -233,6 +234,7 @@ func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd 
 		target:          target,
 		meta:            meta,
 		token:           token,
+		tokenSource:     tokenSource,
 		writeAccess:     writeAccess,
 		diffBase:        diffBase,
 		diffBaseWarning: diffBaseWarning,

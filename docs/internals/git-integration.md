@@ -265,7 +265,7 @@ When developers use px0 to inspect AI agent changes or review git branches, they
 
 ## 8. Diffing Against an Arbitrary Base
 
-`gitDiff`/`gitHunks` above are thin `base="HEAD"` wrappers around `gitDiffAgainst`/`gitHunksAgainst`, which take an arbitrary base ref rather than assuming the working tree's `HEAD`. The one other caller is PR review (`px0 <url>`), which diffs a checked-out PR against its merge-base with the target branch instead. See [GitHub PR Review](github-pr-review.md).
+`gitDiff`/`gitHunks` above are thin `base="HEAD"` wrappers around `gitDiffAgainst`/`gitHunksAgainst`, which take an arbitrary base ref rather than assuming the working tree's `HEAD`. The one other caller is PR review (`px0 <url>`), which diffs a checked-out PR against its merge-base with the target branch instead. See [Pull Request Review](github-pr-review.md).
 
 ## 9. Stage, Commit, Push, Pull
 
@@ -293,11 +293,11 @@ The frontend doesn't trust the harness's exit status. When the job ends it reads
 
 Git failures render in one inline card at the top of the git panel (`#git-notice`, `notice()`/`showGitError()` in `gitpanel.js`), never as a global toast. The card has a tone (`err`, `warn`, `busy`, `ok`), a title, text, optional actions, an optional harness picker (registered through `registerAgentPicker`, so it mirrors the global selection), and a collapsible harness output log. Showing it un-collapses the panel. It clears on the next successful git action, and while an agent rebase/merge runs, other errors don't replace it. The file tree's stage ticks report failures through the bus (`git:error`) to the same card. Success messages still use toasts.
 
-In a PR review session, Pull instead re-syncs with the pull request's current head — see [GitHub PR Review §7](github-pr-review.md).
+In a PR review session, Pull instead re-syncs with the pull request's current head — see [Pull Request Review §7](github-pr-review.md).
 
 ### Push
 
-For a plain workspace, `handleGitPush` runs a bare `gitPush` (`git push`); if that fails specifically because the branch has no upstream, it retries once with `gitPushSetUpstream(root, "origin", branch)`. Neither path ever forces. In a PR review session, `s.pr.Push()` takes over instead — see [GitHub PR Review §7](github-pr-review.md).
+For a plain workspace, `handleGitPush` runs a bare `gitPush` (`git push`); if that fails specifically because the branch has no upstream, it retries once with `gitPushSetUpstream(root, "origin", branch)`. Neither path ever forces. In a PR review session, `s.pr.Push(force)` takes over instead (`force` only after a confirmed force-push of a rebased PR, as a lease) — see [Pull Request Review §7](github-pr-review.md).
 
 ### Commit with AI
 

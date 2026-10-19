@@ -52,6 +52,24 @@ func (g *GitLabProvider) Info() ForgeInfo {
 	}
 }
 
+func (g *GitLabProvider) TokenSetup(host string) TokenSetup {
+	if host == "" {
+		host = "gitlab.com"
+	}
+	return TokenSetup{
+		URL: "https://" + host + "/-/user_settings/personal_access_tokens",
+		Steps: []string{
+			"Select Add new token, name it (e.g. px0) and pick an expiration date.",
+			"Under Select scopes, check api.",
+			"Create the token and copy it.",
+		},
+		CLI:      "glab auth login",
+		Env:      "GITLAB_TOKEN",
+		HostKey:  "gitlab.host",
+		Readonly: "Public projects open and diff without a token; posting comments, approving, pushing and merging need one.",
+	}
+}
+
 func (g *GitLabProvider) MatchURL(rawURL string) bool {
 	return gitlabMRURLRe.MatchString(strings.TrimSpace(rawURL))
 }
@@ -92,17 +110,19 @@ func (g *GitLabProvider) GitAuth(target PRTarget, token string) gitAuth {
 }
 
 // gitlabTokenHost is the one host the gitlab.token setting and the
-// GITLAB_TOKEN variable are sent to: gitlab.com unless GITLAB_HOST (glab's
-// own convention) names a self-hosted instance. A merge request URL can name
-// any host, and a token must never reach one it wasn't issued by.
+// GITLAB_TOKEN variable are sent to: the gitlab.host setting, else
+// GITLAB_HOST (glab's own convention), else gitlab.com. A merge request URL
+// can name any host, and a token must never reach one it wasn't issued by.
 func gitlabTokenHost() string {
-	if h := strings.TrimSpace(os.Getenv("GITLAB_HOST")); h != "" {
-		if u, err := url.Parse(h); err == nil && u.Host != "" {
-			return strings.ToLower(u.Host)
-		}
-		return strings.ToLower(strings.TrimSuffix(h, "/"))
+	cfg := readSettings()
+	h := ""
+	if cfg.GitLabHost != nil {
+		h = strings.TrimSpace(*cfg.GitLabHost)
 	}
-	return "gitlab.com"
+	if h == "" {
+		h = strings.TrimSpace(os.Getenv("GITLAB_HOST"))
+	}
+	return normalizeHost(h, "gitlab.com")
 }
 
 // ResolveToken looks, in order, for the gitlab.token setting and then

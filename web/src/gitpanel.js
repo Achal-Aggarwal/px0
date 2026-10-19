@@ -429,6 +429,7 @@ function initNotice() {
   on('pr:resolve', resolvePRBase);
   on('pr:force-push', confirmForcePush);
   on('pr:pull', doPull);
+  on('forge:connected', updateGitPanelVisibility);
 }
 
 /**

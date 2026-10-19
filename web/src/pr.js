@@ -14,8 +14,9 @@ import { reloadWorkspace } from './agent.js';
 import { openFile } from './tabs.js';
 import { refreshTree } from './tree.js';
 import { layout, render } from './renderer.js';
-import { openSettings } from './settings.js';
 import { initPRMerge, refreshMergeStatus, reviewGate } from './prmerge.js';
+import { openForgeConnect } from './forgeconnect.js';
+import { on } from './bus.js';
 
 let meta = null;      // this session's PR info: {number, title, base, head, writeAccess, readOnly}
 let comments = [];    // draft comments known to the server
@@ -40,6 +41,8 @@ export function initPR() {
   wireCommentsPanel();
   renderBar();
   initPRMerge({ meta: () => meta, onMerged: refreshPRMeta, onChange: renderBar });
+  // A token connected mid-review applies at once: re-read what it unlocks.
+  on('forge:connected', refreshPRMeta);
   refreshComments();
   refreshExistingComments();
 }
@@ -170,10 +173,9 @@ export function forgeInfo() {
   return S.meta?.forge?.info || { label: 'GitHub', tokenKey: 'github.token', tokenCategory: 'GitHub', tokenHint: 'set GITHUB_TOKEN, set GH_TOKEN, or run `gh auth login`' };
 }
 
-export function nudgeForgeToken() {
-  const f = forgeInfo();
-  showToast('!', `No ${f.label} token configured: ${f.tokenHint} -- or connect in Settings.`, 5000);
-  openSettings('ui', f.tokenCategory, f.tokenKey);
+// Opens the Connect dialog; reason finishes "A <forge> token is needed ...".
+export function nudgeForgeToken(reason = '') {
+  openForgeConnect(typeof reason === 'string' ? reason : '');
 }
 
 function wireBarButtons() {
@@ -187,7 +189,7 @@ function wireBarButtons() {
 
 async function sendNewIssueComment() {
   if (meta?.readOnly) {
-    nudgeForgeToken();
+    nudgeForgeToken('to post comments');
     return;
   }
   const ta = $('#pr-issue-compose-body');
@@ -283,7 +285,7 @@ async function pollPRBatch(id, count) {
 
 async function submitReview(event) {
   if (meta?.readOnly) {
-    nudgeForgeToken();
+    nudgeForgeToken('to submit a review');
     return;
   }
   const bodyEl = $('#pr-review-body');
@@ -644,7 +646,7 @@ function wireCommentsPanel() {
 async function sendThreadReply(row) {
   if (!row) return;
   if (meta?.readOnly) {
-    nudgeForgeToken();
+    nudgeForgeToken('to reply to comments');
     return;
   }
   const ta = row.querySelector('.reply-input');

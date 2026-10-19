@@ -48,6 +48,23 @@ func (g *GiteaProvider) Info() ForgeInfo {
 	}
 }
 
+func (g *GiteaProvider) TokenSetup(host string) TokenSetup {
+	if host == "" {
+		host = "codeberg.org"
+	}
+	return TokenSetup{
+		URL: "https://" + host + "/user/settings/applications",
+		Steps: []string{
+			"Under Generate new token, name it (e.g. px0).",
+			"Under Select permissions, set repository and issue to Read and write.",
+			"Generate the token and copy it.",
+		},
+		Env:      "GITEA_TOKEN",
+		HostKey:  "gitea.host",
+		Readonly: "Public repositories open and diff without a token; posting comments, reviewing, pushing and merging need one.",
+	}
+}
+
 func (g *GiteaProvider) MatchURL(rawURL string) bool {
 	m := giteaPRURLRe.FindStringSubmatch(strings.TrimSpace(rawURL))
 	return m != nil && !strings.EqualFold(m[1], "github.com")
@@ -99,13 +116,7 @@ func giteaTokenHost(cfg settings) string {
 	if h == "" {
 		h = strings.TrimSpace(os.Getenv("GITEA_HOST"))
 	}
-	if h == "" {
-		return "codeberg.org"
-	}
-	if u, err := url.Parse(h); err == nil && u.Host != "" {
-		return strings.ToLower(u.Host)
-	}
-	return strings.ToLower(strings.TrimSuffix(h, "/"))
+	return normalizeHost(h, "codeberg.org")
 }
 
 func (g *GiteaProvider) ResolveToken(cfg settings, t PRTarget) (token, source string) {

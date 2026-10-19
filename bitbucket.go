@@ -46,6 +46,24 @@ func (b *BitbucketProvider) Info() ForgeInfo {
 	}
 }
 
+func (b *BitbucketProvider) TokenSetup(host string) TokenSetup {
+	return TokenSetup{
+		URL: "https://id.atlassian.com/manage-profile/security/api-tokens",
+		Steps: []string{
+			"Select Create API token with scopes, name it (e.g. px0) and pick an expiry.",
+			"Choose Bitbucket as the app.",
+			"Grant read and write access to repositories and pull requests, and read access to your account (px0 uses it to check push access).",
+			"Create the token, copy it, and enter your Atlassian account email below.",
+		},
+		Env: "BITBUCKET_TOKEN",
+		Extra: &TokenField{
+			Key: "bitbucket.email", Label: "Atlassian account email", Placeholder: "you@example.com",
+			Hint: "Leave empty for a repository, project or workspace access token. Approve and Merge need an API token with an email.",
+		},
+		Readonly: "Public repositories open and diff without a token; posting comments, reviewing, pushing and merging need one.",
+	}
+}
+
 func (b *BitbucketProvider) MatchURL(rawURL string) bool {
 	return bitbucketPRURLRe.MatchString(strings.TrimSpace(rawURL))
 }

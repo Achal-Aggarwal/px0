@@ -131,6 +131,19 @@ func basicGitAuth(host, user, token string) gitAuth {
 	}
 }
 
+// normalizeHost turns a configured host ("https://git.example.com/" or
+// "git.example.com") into a bare lowercase host, or def when it is empty.
+func normalizeHost(h, def string) string {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return def
+	}
+	if u, err := url.Parse(h); err == nil && u.Host != "" {
+		return strings.ToLower(u.Host)
+	}
+	return strings.ToLower(strings.TrimSuffix(h, "/"))
+}
+
 // redact strips the token from text git printed.
 func (a gitAuth) redact(s string) string { return redactToken(s, a.Token) }
 
@@ -144,6 +157,28 @@ type ForgeInfo struct {
 	TokenHint     string `json:"tokenHint"`     // where else a token is picked up from
 }
 
+// TokenSetup walks someone through getting a token for one forge host: the
+// page that creates it, what to pick there, and the settings px0 stores it
+// under. It drives the Connect dialog, so it must name exactly what the
+// forge's own page calls things.
+type TokenSetup struct {
+	URL      string      `json:"url"`                // the forge page that creates a token
+	Steps    []string    `json:"steps"`              // what to choose on that page, in order
+	CLI      string      `json:"cli,omitempty"`      // a CLI login px0 also reads, e.g. "gh auth login"
+	Env      string      `json:"env"`                // the environment variable px0 also reads
+	HostKey  string      `json:"hostKey,omitempty"`  // setting naming the host the token belongs to, for forges that have many
+	Extra    *TokenField `json:"extra,omitempty"`    // a second value some tokens need (Bitbucket's account email)
+	Readonly string      `json:"readonly,omitempty"` // what works without any token
+}
+
+// TokenField is one more input the Connect dialog asks for.
+type TokenField struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Placeholder string `json:"placeholder"`
+	Hint        string `json:"hint"`
+}
+
 // GitProvider abstracts forge-specific operations (GitHub, GitLab, etc.)
 // for pull/merge request reviews.
 type GitProvider interface {
@@ -152,6 +187,10 @@ type GitProvider interface {
 
 	// Info names the forge and its token setting for the UI.
 	Info() ForgeInfo
+
+	// TokenSetup says how to create a token for host (the forge's own host
+	// for a single-host forge).
+	TokenSetup(host string) TokenSetup
 
 	// MatchRemote reports whether a git remote URL points at this forge, so
 	// a plain workspace knows which token it would need.

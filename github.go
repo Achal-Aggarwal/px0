@@ -58,6 +58,21 @@ func (g *GitHubProvider) Info() ForgeInfo {
 	}
 }
 
+func (g *GitHubProvider) TokenSetup(host string) TokenSetup {
+	return TokenSetup{
+		URL: "https://github.com/settings/personal-access-tokens/new",
+		Steps: []string{
+			"Name the token (e.g. px0) and pick an expiration.",
+			"Under Repository access, choose the repositories you review (or All repositories).",
+			"Under Repository permissions, set Contents and Pull requests to Read and write.",
+			"Generate the token and copy it.",
+		},
+		CLI:      "gh auth login",
+		Env:      "GITHUB_TOKEN",
+		Readonly: "Public repositories open and diff without a token; posting comments, reviewing, pushing and merging need one.",
+	}
+}
+
 func (g *GitHubProvider) MatchRemote(remoteURL string) bool {
 	return remoteHost(remoteURL) == "github.com"
 }

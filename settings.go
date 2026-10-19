@@ -34,6 +34,7 @@ type settings struct {
 	TelemetryEnabled            *bool    `json:"telemetry.enabled,omitempty"`
 	GitHubToken                 *string  `json:"github.token,omitempty"`
 	GitLabToken                 *string  `json:"gitlab.token,omitempty"`
+	GitLabHost                  *string  `json:"gitlab.host,omitempty"`
 	GiteaToken                  *string  `json:"gitea.token,omitempty"`
 	GiteaHost                   *string  `json:"gitea.host,omitempty"`
 	BitbucketToken              *string  `json:"bitbucket.token,omitempty"`
@@ -370,11 +371,19 @@ var settingsSchema = []settingSchemaItem{
 	{
 		Key:         "gitlab.token",
 		Title:       "GitLab Token",
-		Description: "Personal access token (api scope) used to check out, review and merge GitLab merge requests, on gitlab.com or a self-hosted instance. Sent only to gitlab.com, or to the host named by the GITLAB_HOST environment variable; other self-hosted instances use the token 'glab auth login' stored for them. Takes precedence over the GITLAB_TOKEN environment variable.",
+		Description: "Personal access token (api scope) used to check out, review and merge GitLab merge requests, on gitlab.com or a self-hosted instance. Sent only to the GitLab Host below; other self-hosted instances use the token 'glab auth login' stored for them. Takes precedence over the GITLAB_TOKEN environment variable.",
 		Category:    "GitLab",
 		Type:        "string",
 		Default:     "",
 		Secret:      true,
+	},
+	{
+		Key:         "gitlab.host",
+		Title:       "GitLab Host",
+		Description: "The GitLab instance the GitLab token belongs to (e.g. gitlab.example.com). Merge requests on any other host are opened without it. Falls back to GITLAB_HOST, then gitlab.com.",
+		Category:    "GitLab",
+		Type:        "string",
+		Default:     "",
 	},
 	{
 		Key:         "gitea.token",
