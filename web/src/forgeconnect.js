@@ -13,7 +13,7 @@ import { showToast } from './ui.js';
 import { emit } from './bus.js';
 import { openSettings } from './settings.js';
 
-const modal = () => $('#forge-connect-modal');
+const connectModal = () => $('#forge-connect-modal');
 
 const SOURCES = {
   settings: 'a token saved in px0 Settings',
@@ -25,13 +25,13 @@ const SOURCES = {
 
 let wired = false;
 
-function wire() {
+function wireForgeConnect() {
   if (wired) return;
   wired = true;
-  const m = modal();
+  const m = connectModal();
   $('#forge-connect-close')?.addEventListener('click', close);
   $('#forge-connect-cancel')?.addEventListener('click', close);
-  $('#forge-connect-submit')?.addEventListener('click', submit);
+  $('#forge-connect-submit')?.addEventListener('click', submitForgeConnect);
   $('#forge-connect-settings')?.addEventListener('click', e => {
     e.preventDefault();
     const f = S.meta?.forge?.info;
@@ -42,7 +42,7 @@ function wire() {
   $('#forge-connect-hint').textContent = keyLabel('Enter') + ' to connect, Esc to cancel';
   m.addEventListener('keydown', e => {
     if (e.key === 'Escape') { e.preventDefault(); close(); }
-    else if (e.key === 'Enter' && (e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+    else if (e.key === 'Enter' && (e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey)) { e.preventDefault(); submitForgeConnect(); }
   });
 }
 
@@ -54,11 +54,11 @@ function wire() {
  */
 export function openForgeConnect(reason = '') {
   const forge = S.meta?.forge;
-  if (!forge || !modal()) {
+  if (!forge || !connectModal()) {
     openSettings('ui', 'GitHub', 'github.token');
     return;
   }
-  wire();
+  wireForgeConnect();
   const { info, setup, host, hasToken, source } = forge;
   const pr = !!S.meta?.pr;
   $('#forge-connect-title').textContent = `Connect ${info.label}`;
@@ -85,8 +85,8 @@ export function openForgeConnect(reason = '') {
     $('#forge-connect-extra-hint').textContent = extra.hint;
   }
 
-  const alts = [`set ${code(setup.env)}`];
-  if (setup.cli) alts.push(`run ${code(setup.cli)}`);
+  const alts = [`set ${codeTag(setup.env)}`];
+  if (setup.cli) alts.push(`run ${codeTag(setup.cli)}`);
   $('#forge-connect-alt').innerHTML = `Or ${alts.join(' or ')} in your shell, then restart px0.` +
     (setup.hostKey ? ` px0 sends the token only to ${esc(host)}.` : '');
   $('#forge-connect-check').textContent = pr
@@ -95,46 +95,46 @@ export function openForgeConnect(reason = '') {
 
   $('#forge-connect-token').value = '';
   $('#forge-connect-extra-input').value = '';
-  setErr('');
-  setBusy(false);
-  modal().hidden = false;
+  setForgeConnectErr('');
+  setForgeConnectBusy(false);
+  connectModal().hidden = false;
   $('#forge-connect-token').focus();
 }
 
-const code = s => '<code>' + esc(s || '') + '</code>';
+const codeTag = s => '<code>' + esc(s || '') + '</code>';
 
 function close() {
-  const m = modal();
+  const m = connectModal();
   if (m) m.hidden = true;
 }
 
-function setErr(msg) {
+function setForgeConnectErr(msg) {
   const el = $('#forge-connect-err');
   el.hidden = !msg;
   el.textContent = msg;
 }
 
-function setBusy(busy) {
+function setForgeConnectBusy(busy) {
   const btn = $('#forge-connect-submit');
   btn.disabled = busy;
   btn.textContent = busy ? 'Checking...' : 'Connect';
 }
 
-async function submit() {
+async function submitForgeConnect() {
   const token = $('#forge-connect-token').value.trim();
   if (!token) {
-    setErr('Paste the token first.');
+    setForgeConnectErr('Paste the token first.');
     $('#forge-connect-token').focus();
     return;
   }
-  setErr('');
-  setBusy(true);
+  setForgeConnectErr('');
+  setForgeConnectBusy(true);
   let res;
   try {
     res = await apiPostJson('/api/forge/connect', { token, extra: $('#forge-connect-extra-input').value.trim() });
   } catch (e) {
-    setBusy(false);
-    setErr(e.message || 'Could not connect');
+    setForgeConnectBusy(false);
+    setForgeConnectErr(e.message || 'Could not connect');
     return;
   }
   const forge = S.meta.forge;

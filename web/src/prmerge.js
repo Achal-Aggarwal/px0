@@ -18,21 +18,21 @@ import { openSettings } from './settings.js';
 const METHODS = {
   merge: {
     label: 'Create a merge commit', button: 'Merge', confirm: 'Confirm merge', done: 'Merged',
-    explain: (n, base) => `All ${plural(n, 'commit')} from this branch are added to ${base} with a merge commit.`,
+    explain: (n, base) => `All ${pluralize(n, 'commit')} from this branch are added to ${base} with a merge commit.`,
   },
   squash: {
     label: 'Squash and merge', button: 'Squash and merge', confirm: 'Confirm squash and merge', done: 'Squashed and merged',
-    explain: (n, base) => `The ${plural(n, 'commit')} from this branch are combined into one commit on ${base}.`,
+    explain: (n, base) => `The ${pluralize(n, 'commit')} from this branch are combined into one commit on ${base}.`,
   },
   rebase: {
     label: 'Rebase and merge', button: 'Rebase and merge', confirm: 'Confirm rebase and merge', done: 'Rebased and merged',
-    explain: (n, base) => `The ${plural(n, 'commit')} from this branch are replayed onto ${base} one by one, with no merge commit.`,
+    explain: (n, base) => `The ${pluralize(n, 'commit')} from this branch are replayed onto ${base} one by one, with no merge commit.`,
   },
 };
 const METHOD_KEY = 'px0.prMergeMethod';
 
-const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
-const code = s => '<code>' + esc(s || '') + '</code>';
+const pluralize = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+const codeHtml = s => '<code>' + esc(s || '') + '</code>';
 
 let ctx = null;       // { meta: () => PR meta, onMerged: () => Promise }
 let info = null;      // last /api/pr/merge-status reply
@@ -48,7 +48,7 @@ export function initPRMerge(c) {
   ctx = c;
   on('git:sync', st => {
     sync = { ...sync, ...st };
-    render();
+    renderPRMerge();
     ctx.onChange();
   });
   $('#pr-merge-state')?.addEventListener('click', onPillClick);
@@ -79,12 +79,12 @@ export async function refreshMergeStatus() {
   } else {
     unknownRetries = 0;
   }
-  render();
+  renderPRMerge();
   ctx.onChange();
 }
 
 const state = () => info?.status?.state || '';
-const base = () => info?.base || ctx?.meta()?.base || 'the base branch';
+const baseBranch = () => info?.base || ctx?.meta()?.base || 'the base branch';
 const allowed = () => info?.status?.methods || [];
 
 function chosenMethod() {
@@ -111,7 +111,7 @@ export function reviewGate() {
     return { all: null, approve: 'Force-push the rebased branch first: approving now would approve the old commits', approveNote: null };
   }
   if (state() === 'conflicts') {
-    return { all: null, approve: null, approveNote: `This PR conflicts with ${base()}; approving won't make it mergeable until the conflicts are resolved` };
+    return { all: null, approve: null, approveNote: `This PR conflicts with ${baseBranch()}; approving won't make it mergeable until the conflicts are resolved` };
   }
   return { all: null, approve: null, approveNote: null };
 }
@@ -127,10 +127,10 @@ function pill() {
   if (!st) return null;
   const reason = st.reason || '';
   switch (st.state) {
-    case 'clean': return { tone: 'ok', text: 'Ready to merge', title: 'No conflicts with ' + base() };
+    case 'clean': return { tone: 'ok', text: 'Ready to merge', title: 'No conflicts with ' + baseBranch() };
     case 'unstable': return { tone: 'warn', text: 'Checks failing', title: reason || 'Mergeable, but some checks are failing' };
-    case 'conflicts': return { tone: 'err', text: 'Conflicts with ' + base(), title: 'Resolve them with your coding harness', act: 'resolve' };
-    case 'behind': return { tone: 'warn', text: 'Behind ' + base(), title: 'Bring the branch up to date with your coding harness', act: 'resolve' };
+    case 'conflicts': return { tone: 'err', text: 'Conflicts with ' + baseBranch(), title: 'Resolve them with your coding harness', act: 'resolve' };
+    case 'behind': return { tone: 'warn', text: 'Behind ' + baseBranch(), title: 'Bring the branch up to date with your coding harness', act: 'resolve' };
     case 'blocked': return { tone: 'muted', text: 'Merge blocked', title: reason || 'Branch protection refuses the merge' };
     case 'draft': return { tone: 'muted', text: 'Draft', title: reason || 'This PR is still a draft' };
     case 'unknown': return { tone: 'busy', text: 'Checking mergeability...', title: 'The forge is still computing whether this PR can merge' };
@@ -156,16 +156,16 @@ function mainAction() {
   if (info?.stale) return { label: 'Pull new commits', tone: 'warn', title: 'The PR has commits this checkout has not seen; pull and review them before merging', run: () => emit('pr:pull') };
   const m = METHODS[chosenMethod()];
   switch (state()) {
-    case 'conflicts': return { label: 'Resolve conflicts', tone: 'warn', title: `Rebase onto or merge ${base()} with your coding harness`, run: () => emit('pr:resolve') };
-    case 'behind': return { label: 'Update branch', tone: 'warn', title: `Bring the branch up to date with ${base()}`, run: () => emit('pr:resolve') };
+    case 'conflicts': return { label: 'Resolve conflicts', tone: 'warn', title: `Rebase onto or merge ${baseBranch()} with your coding harness`, run: () => emit('pr:resolve') };
+    case 'behind': return { label: 'Update branch', tone: 'warn', title: `Bring the branch up to date with ${baseBranch()}`, run: () => emit('pr:resolve') };
     case 'unknown': return { label: m.button, disabled: true, title: 'Still checking whether this PR can merge' };
     case 'blocked':
     case 'draft': return { label: m.button, disabled: true, title: info.status.reason || 'This PR cannot merge yet' };
   }
-  return { label: m.button, title: `${m.label} into ${base()} (review the commit first)`, run: () => openDialog(chosenMethod()) };
+  return { label: m.button, title: `${m.label} into ${baseBranch()} (review the commit first)`, run: () => openDialog(chosenMethod()) };
 }
 
-function render() {
+function renderPRMerge() {
   const pillEl = $('#pr-merge-state');
   const p = pill();
   if (pillEl) {
@@ -206,13 +206,13 @@ function renderMenu() {
   menu.innerHTML = allowed().map(m =>
     `<button type="button" role="menuitemradio" aria-checked="${m === cur}" data-method="${m}">` +
     `<span class="pr-merge-menu-check">${m === cur ? '&#10003;' : ''}</span>` +
-    `<span class="pr-merge-menu-text"><b>${esc(METHODS[m].label)}</b><span>${esc(METHODS[m].explain(n, base()))}</span></span></button>`
+    `<span class="pr-merge-menu-text"><b>${esc(METHODS[m].label)}</b><span>${esc(METHODS[m].explain(n, baseBranch()))}</span></span></button>`
   ).join('');
   for (const b of menu.querySelectorAll('button')) {
     b.addEventListener('click', () => {
       rememberMethod(b.dataset.method);
       toggleMenu(false);
-      render();
+      renderPRMerge();
       const a = mainAction();
       // Picking a method is picking what to do: open the dialog for it when
       // merging is possible, otherwise just remember it for later.
@@ -233,10 +233,10 @@ let method = 'squash';
 let drafts = {};      // method -> {title, message}, so switching methods keeps edits
 let aiJob = 0;
 
-const modal = () => $('#pr-merge-modal');
+const mergeModal = () => $('#pr-merge-modal');
 
 function initDialog() {
-  const m = modal();
+  const m = mergeModal();
   if (!m) return;
   $('#pr-merge-close')?.addEventListener('click', closeDialog);
   $('#pr-merge-cancel')?.addEventListener('click', closeDialog);
@@ -272,14 +272,14 @@ async function openDialog(m) {
   method = m;
   drafts = {};
   for (const k of Object.keys(info.defaults || {})) drafts[k] = { ...info.defaults[k] };
-  setErr('');
+  setPRMergeErr('');
   renderDialog();
-  modal().hidden = false;
+  mergeModal().hidden = false;
   (method === 'rebase' ? $('#pr-merge-confirm') : $('#pr-merge-commit-title'))?.focus();
 }
 
 function closeDialog() {
-  const m = modal();
+  const m = mergeModal();
   if (m) m.hidden = true;
 }
 
@@ -287,7 +287,7 @@ function renderDialog() {
   const meta = ctx.meta();
   const n = info.commits?.length || 0;
   $('#pr-merge-title').textContent = `Merge pull request #${meta.number}`;
-  $('#pr-merge-refs').innerHTML = `${code(meta.head)} &rarr; ${code(base())}`;
+  $('#pr-merge-refs').innerHTML = `${codeHtml(meta.head)} &rarr; ${codeHtml(baseBranch())}`;
 
   const methods = $('#pr-merge-methods');
   methods.innerHTML = allowed().map(k =>
@@ -298,11 +298,11 @@ function renderDialog() {
       saveDraft();
       method = b.dataset.method;
       rememberMethod(method);
-      render();
+      renderPRMerge();
       renderDialog();
     });
   }
-  $('#pr-merge-explain').textContent = METHODS[method].explain(n, base());
+  $('#pr-merge-explain').textContent = METHODS[method].explain(n, baseBranch());
 
   const commitBox = $('#pr-merge-commit');
   commitBox.hidden = method === 'rebase';
@@ -328,11 +328,11 @@ function renderWarnings() {
   if (sync.running || sync.inProgress) block = 'A rebase is in progress in this checkout. Finish or abort it first.';
   else if (info.rewritten || sync.rewritten) block = 'This checkout was rebased but not pushed. Force-push it first, or the old commits are what merges.';
   else if (info.stale) block = 'The PR has commits this checkout has not seen. Pull and review them before merging.';
-  else if (state() === 'conflicts') block = `This PR has conflicts with ${base()}. Resolve them first.`;
+  else if (state() === 'conflicts') block = `This PR has conflicts with ${baseBranch()}. Resolve them first.`;
   if (block) w.push(`<div class="pr-merge-warn block">${esc(block)}</div>`);
   if (state() === 'unstable') w.push(`<div class="pr-merge-warn">${esc(info.status.reason || 'Some checks are failing or still running.')}</div>`);
   if (info.unpushed > 0 && !info.rewritten) {
-    w.push(`<div class="pr-merge-warn">${plural(info.unpushed, 'local commit')} in this checkout ${info.unpushed === 1 ? "isn't" : "aren't"} pushed to the PR and won't be part of the merge.</div>`);
+    w.push(`<div class="pr-merge-warn">${pluralize(info.unpushed, 'local commit')} in this checkout ${info.unpushed === 1 ? "isn't" : "aren't"} pushed to the PR and won't be part of the merge.</div>`);
   }
   $('#pr-merge-warnings').innerHTML = w.join('');
   const confirm = $('#pr-merge-confirm');
@@ -351,7 +351,7 @@ function saveDraft() {
   drafts[method] = { title: $('#pr-merge-commit-title').value, message: $('#pr-merge-commit-body').value };
 }
 
-function setErr(msg) {
+function setPRMergeErr(msg) {
   const el = $('#pr-merge-err');
   if (!el) return;
   el.hidden = !msg;
@@ -360,15 +360,15 @@ function setErr(msg) {
 
 async function confirmMerge() {
   const confirm = $('#pr-merge-confirm');
-  if (modal()?.hidden || confirm.disabled) return;
+  if (mergeModal()?.hidden || confirm.disabled) return;
   saveDraft();
   const d = drafts[method] || {};
   if (method !== 'rebase' && !d.title?.trim()) {
-    setErr('The commit needs a title.');
+    setPRMergeErr('The commit needs a title.');
     $('#pr-merge-commit-title').focus();
     return;
   }
-  setErr('');
+  setPRMergeErr('');
   confirm.disabled = true;
   confirm.textContent = 'Merging...';
   try {
@@ -376,12 +376,12 @@ async function confirmMerge() {
   } catch (e) {
     confirm.textContent = METHODS[method].confirm;
     confirm.disabled = false;
-    setErr(e.message || 'Merge failed');
+    setPRMergeErr(e.message || 'Merge failed');
     refreshMergeStatus();
     return;
   }
   closeDialog();
-  showToast('✓', `${METHODS[method].done} into ${base()}`);
+  showToast('✓', `${METHODS[method].done} into ${baseBranch()}`);
   await ctx.onMerged(); // re-reads the PR, and with it this status
 }
 
@@ -393,14 +393,14 @@ async function rewriteWithAI() {
   saveDraft();
   const btn = $('#pr-merge-ai');
   const d = drafts[method] || {};
-  setErr('');
+  setPRMergeErr('');
   let job;
   try {
     job = await apiPostJson('/api/pr/merge-message', {
       method, instruction: $('#pr-merge-ai-instruction').value.trim(), title: d.title || '', message: d.message || '',
     });
   } catch (e) {
-    setErr(e.message || 'Could not start the harness');
+    setPRMergeErr(e.message || 'Could not start the harness');
     return;
   }
   aiJob = job.id;
@@ -411,7 +411,7 @@ async function rewriteWithAI() {
     aiJob = 0;
     btn.disabled = false;
     btn.textContent = 'Rewrite with AI';
-    if (!modal().hidden) renderWarnings();
+    if (!mergeModal().hidden) renderWarnings();
   };
   const poll = async () => {
     let j;
@@ -427,12 +427,12 @@ async function rewriteWithAI() {
     }
     reset();
     if (j.error) {
-      setErr((j.harness || 'harness') + ': ' + j.error);
+      setPRMergeErr((j.harness || 'harness') + ': ' + j.error);
       return;
     }
     const msg = splitMessage(j.stdout || j.log || '');
     if (!msg.title) {
-      setErr('The harness returned an empty message.');
+      setPRMergeErr('The harness returned an empty message.');
       return;
     }
     drafts[forMethod] = msg;

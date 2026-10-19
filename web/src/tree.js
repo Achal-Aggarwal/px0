@@ -14,6 +14,11 @@ let activeTreeTarget = null;
 export const openDirs = new Set();
 // A newer tree action invalidates responses from older directory requests.
 let expansionVersion = 0;
+let autoRevealSuppressed = false;
+
+export function setAutoRevealSuppressed(suppressed) {
+  autoRevealSuppressed = !!suppressed;
+}
 
 function setExpandBusy(busy) {
   const button = $('#btn-expand-tree');
@@ -140,9 +145,6 @@ export async function refreshTree() {
       openDirs.delete(path);
     }
   }
-  if (isCurrent() && treeEl.classList.contains('changed-only')) {
-    await expandDirtyDirs();
-  }
   markTreeCleanState();
 }
 
@@ -162,7 +164,11 @@ export function collapseAllDirs() {
 }
 
 export async function expandAllDirs() {
-  if (treeEl.classList.contains('changed-only') || $('#btn-expand-tree')?.classList.contains('busy')) return;
+  if ($('#btn-expand-tree')?.classList.contains('busy')) return;
+  if (treeEl.classList.contains('changed-only')) {
+    await expandDirtyDirs();
+    return;
+  }
   const version = ++expansionVersion;
   setExpandBusy(true);
   const queue = Array.from(treeEl.querySelectorAll('.tr.dir'), row => row.dataset.dir);
@@ -415,12 +421,7 @@ export async function patchTreeGitStatus(statuses = {}, dirtyDirs = {}, staged =
   }
 
   relabelTreeBadges();
-
-  // If in changed-only mode, auto-expand any newly dirty directories
   markTreeCleanState();
-  if (treeEl.classList.contains('changed-only')) {
-    await expandDirtyDirs();
-  }
 }
 
 /* Whether the Git view has anything to show. Unpushed commits count: once you
@@ -462,7 +463,7 @@ export function updateSidebarToggleState() {
   }
 }
 
-export async function setSidebarMode(mode) {
+export async function setSidebarMode(mode, { expandDirty = false } = {}) {
   const btnChanged = $('#btn-changed');
   const btnFiles = $('#btn-files');
   const btnCollapse = $('#btn-collapse-tree');
@@ -473,11 +474,11 @@ export async function setSidebarMode(mode) {
     treeEl.classList.add('changed-only');
     btnChanged?.classList.add('active');
     btnFiles?.classList.remove('active');
-    if (btnCollapse) btnCollapse.hidden = true;
-    if (btnExpand) btnExpand.hidden = true;
+    if (btnCollapse) btnCollapse.hidden = false;
+    if (btnExpand) btnExpand.hidden = false;
     expansionVersion++;
     setExpandBusy(false);
-    await expandDirtyDirs();
+    if (expandDirty) await expandDirtyDirs();
   } else {
     treeEl.classList.remove('changed-only');
     btnFiles?.classList.add('active');
@@ -575,7 +576,6 @@ export function initTree() {
   }
 
   $('#btn-collapse-tree')?.addEventListener('click', () => {
-    if (treeEl.classList.contains('changed-only')) return;
     collapseAllDirs();
   });
 
@@ -664,6 +664,7 @@ export function initTree() {
   });
 
   on('tab:activated', ({ doc }) => {
+    if (autoRevealSuppressed) return;
     if (!doc || !doc.path || !isAutoRevealEnabled()) return;
     if (document.body.classList.contains('side-hidden')) return;
     revealFile(doc.path);

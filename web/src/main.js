@@ -5,7 +5,7 @@ import { initTabs, openFile, switchTab } from './tabs.js';
 import { initCursor } from './cursor.js';
 import { initHover } from './hover.js';
 import { initSelectionBar } from './selbar.js';
-import { drawTree, treeEl, initTree, revealFile, refreshTree, setSidebarMode, updateSidebarToggleState, hasGitView } from './tree.js';
+import { drawTree, treeEl, initTree, revealFile, refreshTree, collapseAllDirs, setAutoRevealSuppressed, setSidebarMode, updateSidebarToggleState, hasGitView } from './tree.js';
 import { initSearch } from './search.js';
 import { initOutline } from './outline.js';
 import { initPanels } from './panels.js';
@@ -120,6 +120,7 @@ initPRScope();
     }
   }
   updateStatus();
+  setAutoRevealSuppressed(true);
   await refreshTree();
   initGitStream();
 
@@ -133,7 +134,7 @@ initPRScope();
     // still belongs in Git view, which is the only place they are listed.
     await refreshUnpushed();
     const showGit = hasGitView();
-    await setSidebarMode(showGit ? 'git' : 'files');
+    await setSidebarMode(showGit ? 'git' : 'files', { expandDirty: false });
     return !!(S.meta?.git && S.meta.gitChanges > 0);
   };
   const selectChangedFileTab = async () => {
@@ -143,7 +144,6 @@ initPRScope();
       switchTab(changedTabIdx);
     } else if (S.meta.gitFiles && S.meta.gitFiles.length > 0) {
       await openFile(S.meta.gitFiles[0]);
-      await revealFile(S.meta.gitFiles[0]);
     }
   };
 
@@ -154,7 +154,6 @@ initPRScope();
   const initialLine = parseInt(params.get('line'), 10) || undefined;
   if (initialPath) {
     await openFile(initialPath, { line: initialLine });
-    await revealFile(initialPath);
     try {
       const u = new URL(window.location.href);
       u.searchParams.delete('path');
@@ -166,6 +165,9 @@ initPRScope();
   } else {
     if (hasGitChanges) await selectChangedFileTab();
   }
+
+  collapseAllDirs();
+  setAutoRevealSuppressed(false);
 
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(() => { measure(); layout(); render(); });
@@ -182,8 +184,11 @@ initPRScope();
           S.meta = m;
           updateStatus();
           if (!initialPath) {
+            setAutoRevealSuppressed(true);
             hasGitChanges = await applyGitSidebarState();
             if (hasGitChanges) await selectChangedFileTab();
+            collapseAllDirs();
+            setAutoRevealSuppressed(false);
           }
         }
       } catch {
