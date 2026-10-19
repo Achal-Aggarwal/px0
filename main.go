@@ -209,6 +209,7 @@ func main() {
 	initDur := time.Since(tInit)
 
 	srv := &http.Server{Handler: pxSrv}
+	srv.RegisterOnShutdown(pxSrv.EndStreams)
 	if *wbChild {
 		// The workbench reads this line for the address it proxies to.
 		fmt.Printf("%s%s\n", wbReadyPrefix, addr)
@@ -308,6 +309,7 @@ func main() {
 	// Language servers are children that can hold gigabytes. Shut them down on
 	// the way out rather than leaving them for the OS to reap.
 	interrupted := false
+	shutDown := make(chan struct{}) // closes once Shutdown has drained every request
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	if *wbChild {
@@ -330,9 +332,15 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
+		close(shutDown)
 	}()
 
 	err = srv.Serve(ln)
+	if err == http.ErrServerClosed {
+		// Serve returns as soon as Shutdown starts; exiting then would cut
+		// the responses it is still draining.
+		<-shutDown
+	}
 	lsp.Close()
 	agent.Close()
 	pxSrv.CloseThreads()
