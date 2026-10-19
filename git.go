@@ -300,15 +300,38 @@ var lockfileExclusions = []string{
 // (lockfiles, minified assets) are excluded when other changes exist.
 // Fails quiet -> "".
 func gitStagedDiff(root string) string {
+	return gitPromptDiff(root, "--cached")
+}
+
+// gitRangeDiff is gitStagedDiff for the commits between from and to: what a
+// squash of a PR would land, trimmed the same way for a harness prompt.
+func gitRangeDiff(root, from, to string) string {
+	return gitPromptDiff(root, from, to)
+}
+
+// gitRangeStat is the diffstat between from and to.
+func gitRangeStat(root, from, to string) string {
 	if !gitAvailable(root) {
 		return ""
 	}
+	out, err := exec.Command("git", "-C", root, "diff", "--stat", from, to).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitPromptDiff(root string, diffArgs ...string) string {
+	if !gitAvailable(root) {
+		return ""
+	}
+	base := append([]string{"-C", root, "diff", "--no-color"}, diffArgs...)
 	// Try fetching the diff excluding high-noise files (lockfiles, minified bundles)
-	cmdArgs := append([]string{"-C", root, "diff", "--no-color", "--cached", "--", "."}, lockfileExclusions...)
+	cmdArgs := append(append(append([]string(nil), base...), "--", "."), lockfileExclusions...)
 	out, err := exec.Command("git", cmdArgs...).Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		// Fallback to unfiltered diff if excluded diff was empty or failed (e.g. only lockfiles were modified)
-		out, err = exec.Command("git", "-C", root, "diff", "--no-color", "--cached").Output()
+		out, err = exec.Command("git", base...).Output()
 		if err != nil {
 			return ""
 		}
@@ -438,6 +461,26 @@ func gitRebasingBranch(root string) string {
 		}
 	}
 	return ""
+}
+
+// gitIsAncestor reports whether commit a is an ancestor of (or equal to) b.
+func gitIsAncestor(root, a, b string) bool {
+	return exec.Command("git", "-C", root, "merge-base", "--is-ancestor", a, b).Run() == nil
+}
+
+// gitAheadBehindRef counts the commits HEAD has that ref does not, and the
+// other way round. Both are 0 when ref doesn't resolve.
+func gitAheadBehindRef(root, ref string) (ahead, behind int) {
+	out, err := exec.Command("git", "-C", root, "rev-list", "--left-right", "--count", "HEAD..."+ref).Output()
+	if err != nil {
+		return 0, 0
+	}
+	parts := strings.Fields(string(out))
+	if len(parts) >= 2 {
+		ahead, _ = strconv.Atoi(parts[0])
+		behind, _ = strconv.Atoi(parts[1])
+	}
+	return ahead, behind
 }
 
 // gitAbortOp aborts the rebase or merge in progress, restoring the branch to

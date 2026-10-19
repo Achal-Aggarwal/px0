@@ -15,6 +15,7 @@ import { openFile } from './tabs.js';
 import { refreshTree } from './tree.js';
 import { layout, render } from './renderer.js';
 import { openSettings } from './settings.js';
+import { initPRMerge, refreshMergeStatus, reviewGate } from './prmerge.js';
 
 let meta = null;      // this session's PR info: {number, title, base, head, writeAccess, readOnly}
 let comments = [];    // draft comments known to the server
@@ -38,6 +39,7 @@ export function initPR() {
   wireBarButtons();
   wireCommentsPanel();
   renderBar();
+  initPRMerge({ meta: () => meta, onMerged: refreshPRMeta, onChange: renderBar });
   refreshComments();
   refreshExistingComments();
 }
@@ -60,6 +62,7 @@ export async function refreshPRMeta() {
   }
   await refreshExistingComments();
   await refreshComments();
+  await refreshMergeStatus();
 }
 
 function fmtTime(iso) {
@@ -125,16 +128,29 @@ function renderBar() {
     const hasApplicable = comments.some(c => c.path && c.line && c.body?.trim());
     batchBtn.hidden = !hasApplicable;
   }
+  // The verdict follows the branch: while the checkout is mid-rebase, or
+  // rebased but not pushed, the forge still holds the old commits, so a
+  // verdict now would land on code that is about to be replaced.
+  const gate = reviewGate();
   const reqBtn = $('#pr-submit-request-changes');
   const appBtn = $('#pr-submit-approve');
-  if (reqBtn) reqBtn.hidden = !meta.writeAccess;
-  if (appBtn) appBtn.hidden = !meta.writeAccess;
+  if (reqBtn) {
+    reqBtn.hidden = !meta.writeAccess;
+    reqBtn.disabled = !!gate.all;
+    reqBtn.title = gate.all || 'Request changes on this PR';
+  }
+  if (appBtn) {
+    appBtn.hidden = !meta.writeAccess;
+    appBtn.disabled = !!(gate.all || gate.approve);
+    appBtn.title = gate.all || gate.approve || gate.approveNote || 'Approve this PR';
+    appBtn.classList.toggle('pr-btn-caution', !!gate.approveNote);
+  }
   const cmtBtn = $('#pr-submit-comment');
   if (cmtBtn) {
-    cmtBtn.disabled = false;
-    cmtBtn.title = meta.readOnly
+    cmtBtn.disabled = !!gate.all;
+    cmtBtn.title = gate.all || (meta.readOnly
       ? 'No GitHub token configured -- click to connect and submit'
-      : 'Submit review with drafts, without approval or change requests';
+      : 'Submit review with drafts, without approval or change requests');
   }
   const composeEl = $('#pr-issue-compose');
   if (composeEl) composeEl.hidden = false;
@@ -272,6 +288,7 @@ async function submitReview(event) {
     showToast('✓', event === 'APPROVE' ? 'Review approved'
       : event === 'REQUEST_CHANGES' ? 'Changes requested'
       : 'Review comment submitted');
+    refreshMergeStatus(); // an approval can be what branch protection was waiting for
   } catch (e) {
     showToast('!', e.message || 'Could not submit review');
   }

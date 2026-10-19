@@ -78,6 +78,14 @@ func (g *GitHubProvider) ReplyToReviewComment(ctx context.Context, target PRTarg
 	return replyToReviewComment(ctx, target.Owner, target.Repo, target.Number, token, commentID, body)
 }
 
+func (g *GitHubProvider) MergeStatus(ctx context.Context, target PRTarget, token string) (PRMergeStatus, error) {
+	return fetchMergeStatus(ctx, target.Owner, target.Repo, target.Number, token)
+}
+
+func (g *GitHubProvider) Merge(ctx context.Context, target PRTarget, token string, req PRMergeRequest) (PRMergeResult, error) {
+	return mergePR(ctx, target.Owner, target.Repo, target.Number, token, req)
+}
+
 // resolveGitHubToken looks for a token in order: the explicit px0 setting
 // (github.token), the GITHUB_TOKEN environment variable, GH_TOKEN, then the gh CLI
 // if installed and logged in. An empty return means PR review stays read-only.
@@ -404,4 +412,143 @@ func replyToReviewComment(ctx context.Context, owner, repo string, num int, toke
 		return PRComment{}, err
 	}
 	return c.toPRComment(), nil
+}
+
+// fetchMergeStatus combines the PR's mergeability (computed lazily by GitHub:
+// the first read after a push often says null/"unknown") with the
+// repository's allowed merge methods and the token's push rights.
+func fetchMergeStatus(ctx context.Context, owner, repo string, num int, token string) (PRMergeStatus, error) {
+	resp, err := githubRequest(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, num), token, nil)
+	if err != nil {
+		return PRMergeStatus{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return PRMergeStatus{}, fmt.Errorf("github: fetch PR #%d: %s: %s", num, resp.Status, strings.TrimSpace(string(b)))
+	}
+	var pr struct {
+		State          string `json:"state"`
+		Merged         bool   `json:"merged"`
+		Draft          bool   `json:"draft"`
+		Mergeable      *bool  `json:"mergeable"`
+		MergeableState string `json:"mergeable_state"`
+		Base           struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		return PRMergeStatus{}, err
+	}
+	st := PRMergeStatus{HeadSHA: pr.Head.SHA, Methods: []string{}}
+	st.State, st.Reason = githubMergeState(pr.Merged, pr.State, pr.Draft, pr.Mergeable, pr.MergeableState, pr.Base.Ref)
+
+	if token == "" {
+		return st, nil
+	}
+	rresp, err := githubRequest(ctx, http.MethodGet, "/repos/"+owner+"/"+repo, token, nil)
+	if err != nil {
+		return st, nil // the state alone is still worth showing
+	}
+	defer rresp.Body.Close()
+	if rresp.StatusCode != http.StatusOK {
+		return st, nil
+	}
+	var r struct {
+		AllowMergeCommit *bool `json:"allow_merge_commit"`
+		AllowSquashMerge *bool `json:"allow_squash_merge"`
+		AllowRebaseMerge *bool `json:"allow_rebase_merge"`
+		Permissions      struct {
+			Push bool `json:"push"`
+		} `json:"permissions"`
+	}
+	if err := json.NewDecoder(rresp.Body).Decode(&r); err != nil {
+		return st, nil
+	}
+	// The allow_* fields are only returned to tokens with admin or push
+	// rights; absent means "not ours to know", so nothing is offered.
+	for _, m := range []struct {
+		allowed *bool
+		method  string
+	}{{r.AllowMergeCommit, MergeMethodMerge}, {r.AllowSquashMerge, MergeMethodSquash}, {r.AllowRebaseMerge, MergeMethodRebase}} {
+		if m.allowed != nil && *m.allowed {
+			st.Methods = append(st.Methods, m.method)
+		}
+	}
+	st.CanMerge = r.Permissions.Push
+	return st, nil
+}
+
+// githubMergeState maps GitHub's mergeable/mergeable_state pair onto the
+// forge-neutral MergeState* values.
+func githubMergeState(merged bool, state string, draft bool, mergeable *bool, mergeableState, base string) (string, string) {
+	switch {
+	case merged:
+		return MergeStateMerged, ""
+	case state == "closed":
+		return MergeStateClosed, ""
+	case draft || mergeableState == "draft":
+		return MergeStateDraft, "this PR is still a draft"
+	}
+	switch mergeableState {
+	case "dirty":
+		return MergeStateConflicts, "this branch has conflicts with " + base
+	case "behind":
+		return MergeStateBehind, "this branch is out of date with " + base
+	case "blocked":
+		return MergeStateBlocked, "branch protection requires approving reviews or passing checks"
+	case "unstable":
+		return MergeStateUnstable, "some checks are failing or still running"
+	case "clean", "has_hooks":
+		return MergeStateClean, ""
+	}
+	if mergeable != nil && !*mergeable {
+		return MergeStateConflicts, "this branch has conflicts with " + base
+	}
+	return MergeStateUnknown, ""
+}
+
+// mergePR merges via PUT /pulls/{n}/merge. The sha guard makes GitHub itself
+// refuse (409) a head that moved after the reviewer looked at it.
+func mergePR(ctx context.Context, owner, repo string, num int, token string, req PRMergeRequest) (PRMergeResult, error) {
+	payload := map[string]string{"merge_method": req.Method}
+	if req.HeadSHA != "" {
+		payload["sha"] = req.HeadSHA
+	}
+	if req.Method != MergeMethodRebase {
+		if req.Title != "" {
+			payload["commit_title"] = req.Title
+		}
+		if req.Message != "" {
+			payload["commit_message"] = req.Message
+		}
+	}
+	resp, err := githubRequest(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, num), token, payload)
+	if err != nil {
+		return PRMergeResult{}, err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		SHA     string `json:"sha"`
+		Merged  bool   `json:"merged"`
+		Message string `json:"message"`
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = json.Unmarshal(b, &out)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return PRMergeResult{SHA: out.SHA, Message: out.Message}, nil
+	case http.StatusConflict:
+		return PRMergeResult{}, fmt.Errorf("github: %w: %s", ErrPRHeadMoved, out.Message)
+	case http.StatusMethodNotAllowed, http.StatusUnprocessableEntity:
+		msg := out.Message
+		if msg == "" {
+			msg = strings.TrimSpace(string(b))
+		}
+		return PRMergeResult{}, fmt.Errorf("github: %w: %s", ErrPRNotMergeable, msg)
+	}
+	return PRMergeResult{}, fmt.Errorf("github: merge PR #%d: %s: %s", num, resp.Status, strings.TrimSpace(string(b)))
 }

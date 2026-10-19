@@ -3006,6 +3006,124 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
 }
 .pr-btn-request-changes:hover:not(:disabled) { background: color-mix(in srgb, var(--err) 26%, transparent); }
 
+/* Approving a PR that still conflicts is allowed, but shouldn't read as
+   the all-clear: same button, dashed border. */
+.pr-btn-approve.pr-btn-caution { border-style: dashed; }
+.pr-review-row .footer-btn:disabled { opacity: .5; cursor: default; }
+
+/* ---------- PR merge (web/src/prmerge.js) ---------- */
+/* One pill on whether the PR can merge; it is a button whenever there is a
+   next step (resolve, force-push) and refreshes the status otherwise. */
+.pr-merge-state {
+  --tone: var(--faint);
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  font: 600 11px var(--ui); color: var(--tone); cursor: pointer;
+  background: color-mix(in srgb, var(--tone) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tone) 60%, transparent);
+  border-radius: 999px; padding: 1px 8px;
+}
+.pr-merge-state[hidden] { display: none; }
+.pr-merge-state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pr-merge-state[data-tone="ok"] { --tone: var(--gi); }
+.pr-merge-state[data-tone="warn"] { --tone: var(--warn, #e5a50a); }
+.pr-merge-state[data-tone="err"] { --tone: var(--err); }
+.pr-merge-state[data-tone="busy"] { --tone: var(--accent); }
+.pr-merge-state[data-tone="busy"]::before {
+  background: none; border: 1.5px solid currentColor; border-right-color: transparent;
+  animation: git-notice-spin .8s linear infinite;
+}
+.pr-merge-state:hover { background: color-mix(in srgb, var(--tone) 22%, transparent); }
+
+.pr-merge-group { position: relative; display: flex; flex: none; }
+.pr-merge-group[hidden] { display: none; }
+.pr-review-row .pr-btn-merge {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: var(--accent); color: var(--accent-fg); font-weight: 600;
+}
+.pr-review-row .pr-btn-merge:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent); }
+.pr-review-row .pr-btn-merge[data-tone="warn"] {
+  background: color-mix(in srgb, var(--warn, #e5a50a) 14%, transparent);
+  border-color: var(--warn, #e5a50a); color: var(--warn, #e5a50a);
+}
+.pr-merge-group #pr-merge { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.pr-review-row .pr-merge-caret {
+  padding: 0 6px; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+.pr-merge-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; width: 300px;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--bg2); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
+}
+.pr-merge-menu[hidden] { display: none; }
+.pr-merge-menu button {
+  display: flex; gap: 8px; align-items: flex-start; text-align: left; width: 100%;
+  padding: 6px 8px; border: 0; border-radius: var(--r); background: none; color: var(--fg); cursor: pointer;
+}
+.pr-merge-menu button:hover { background: var(--bg4); }
+.pr-merge-menu-check { flex: none; width: 12px; color: var(--accent-fg); font: 12px var(--ui); }
+.pr-merge-menu-text { display: flex; flex-direction: column; gap: 2px; font: 11px/1.4 var(--ui); color: var(--faint); }
+.pr-merge-menu-text b { font: 600 12px var(--ui); color: var(--fg); }
+
+.pr-merge-dialog {
+  width: min(620px, 94vw); max-height: 90vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px; padding: 16px 18px;
+  background: var(--bg2); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
+  font: 12px var(--ui); color: var(--fg);
+}
+.pr-merge-head { display: flex; align-items: flex-start; gap: 8px; }
+.pr-merge-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pr-merge-head h2 { margin: 0; font: 600 15px var(--ui); }
+.pr-merge-refs { color: var(--faint); font-size: 11px; }
+.pr-merge-refs code { font: 11px var(--mono); color: var(--fg); }
+.pr-merge-methods { display: flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.pr-merge-methods button {
+  flex: 1; padding: 6px 8px; border: 0; border-left: 1px solid var(--line);
+  background: var(--bg); color: var(--faint); font: 12px var(--ui); cursor: pointer;
+}
+.pr-merge-methods button:first-child { border-left: 0; }
+.pr-merge-methods button:hover { color: var(--fg); background: var(--bg4); }
+.pr-merge-methods button.on { background: color-mix(in srgb, var(--accent) 20%, var(--bg)); color: var(--fg); font-weight: 600; }
+.pr-merge-explain { margin: 0; color: var(--faint); }
+.pr-merge-warnings { display: flex; flex-direction: column; gap: 6px; }
+.pr-merge-warnings:empty { display: none; }
+.pr-merge-warn {
+  padding: 6px 8px; border-left: 3px solid var(--warn, #e5a50a); border-radius: var(--r);
+  background: color-mix(in srgb, var(--warn, #e5a50a) 10%, transparent);
+}
+.pr-merge-warn.block { border-left-color: var(--err); background: color-mix(in srgb, var(--err) 10%, transparent); }
+.pr-merge-commit { display: flex; flex-direction: column; gap: 5px; }
+.pr-merge-commit[hidden] { display: none; }
+.pr-merge-label { font: 600 11px var(--ui); color: var(--faint); }
+.pr-merge-label-row { display: flex; align-items: baseline; justify-content: space-between; margin-top: 4px; }
+.pr-merge-input {
+  width: 100%; box-sizing: border-box; padding: 6px 8px; font: 12px var(--mono); color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); outline: none;
+}
+.pr-merge-input:focus { border-color: var(--accent); }
+.pr-merge-body { resize: vertical; min-height: 110px; line-height: 1.45; }
+.pr-merge-ai { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.pr-merge-ai .pr-merge-input { flex: 1; min-width: 0; font-family: var(--ui); }
+.pr-merge-ai .git-agent-picker { flex: none; }
+.pr-merge-ai[hidden] { display: none; }
+.pr-merge-ai .footer-btn, .pr-merge-foot .footer-btn { height: 26px; padding: 0 10px; border: 1px solid var(--line); background: var(--bg3); }
+.pr-merge-foot .pr-btn-merge {
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600;
+}
+.pr-merge-foot .footer-btn:disabled { opacity: .5; cursor: default; }
+.pr-merge-note { font-size: 11px; color: var(--faint); }
+.pr-merge-note[hidden] { display: none; }
+.pr-merge-link { color: var(--accent-fg); text-decoration: none; font-size: 11px; }
+.pr-merge-link:hover { text-decoration: underline; }
+.pr-merge-commit-list {
+  margin: 0; padding: 6px 8px 6px 28px; max-height: 180px; overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r);
+}
+.pr-merge-commit-list[hidden] { display: none; }
+.pr-merge-commit-list li { padding: 2px 0; }
+.pr-merge-commit-list li.empty { list-style: none; color: var(--faint); }
+.pr-merge-commit-list code { font: 11px var(--mono); color: var(--accent-fg); }
+.pr-merge-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+
 
 /* ---------- threads: long-running conversations in the right sidebar ---------- */
 .thr-tab-dot {

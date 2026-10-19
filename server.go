@@ -205,6 +205,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/pr/existing-comments"), s.handlePRExistingComments)
 	s.mux.HandleFunc(s.routePath("/api/pr/comments/issue"), s.handlePRIssueCommentPost)
 	s.mux.HandleFunc(s.routePath("/api/pr/comments/review-reply"), s.handlePRReviewCommentReply)
+	s.mux.HandleFunc(s.routePath("/api/pr/merge-status"), s.handlePRMergeStatus)
+	s.mux.HandleFunc(s.routePath("/api/pr/merge"), s.handlePRMerge)
+	s.mux.HandleFunc(s.routePath("/api/pr/merge-message"), s.handlePRMergeMessage)
 	s.mux.HandleFunc(s.routePath("/api/session"), s.handleSession)
 }
 
@@ -1774,22 +1777,23 @@ func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.pr != nil {
-		if err := s.pr.Push(); err != nil {
+		// force is only sent after the reviewer confirmed pushing a rebased
+		// PR branch; it is a lease, never a blind overwrite (prSession.Push).
+		var body struct {
+			Force bool `json:"force"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&body)
+		if op := gitOpInProgress(s.ix.Root()); op != "" {
+			fail(w, http.StatusConflict, "a "+op+" is in progress; finish or abort it before pushing")
+			return
+		}
+		if err := s.pr.Push(body.Force); err != nil {
 			fail(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		// Pushed commits are part of the PR now: move the PR-head boundary so
 		// they stop being "yours" (and the PR's file set picks them up).
-		s.pr.mu.Lock()
-		s.prHeadSHA = s.pr.meta.HeadSHA
-		s.pr.mu.Unlock()
-		if s.ix != nil {
-			s.ix.SetPRHead(s.prHeadSHA)
-			s.ix.SetPushedHead(s.prHeadSHA)
-		}
-		if s.gitWatcher != nil {
-			s.gitWatcher.Trigger()
-		}
+		s.syncPRRefs()
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}
@@ -1818,6 +1822,11 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.pr != nil {
+		if op := gitOpInProgress(s.ix.Root()); op != "" {
+			st, _ := s.prSyncState(false)
+			failSync(w, st, "a "+op+" is already in progress")
+			return
+		}
 		info, err := s.pr.Pull()
 		if err != nil {
 			status := http.StatusBadGateway
@@ -1827,18 +1836,7 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 			fail(w, status, err.Error())
 			return
 		}
-		s.pr.mu.Lock()
-		s.diffBase = s.pr.diffBase
-		s.prHeadSHA = s.pr.meta.HeadSHA
-		s.pr.mu.Unlock()
-		if s.ix != nil {
-			s.ix.SetDiffBase(s.diffBase)
-			s.ix.SetPRHead(s.prHeadSHA)
-			s.ix.SetPushedHead(s.prHeadSHA)
-		}
-		if s.gitWatcher != nil {
-			s.gitWatcher.Trigger()
-		}
+		s.syncPRRefs()
 		writeJSON(w, map[string]any{"ok": true, "message": info})
 		return
 	}
@@ -1885,11 +1883,61 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 type gitSyncState struct {
 	Code       string `json:"code,omitempty"` // "diverged" or "in-progress" on a refused pull
 	Branch     string `json:"branch"`
-	Upstream   string `json:"upstream"` // e.g. "origin/main"; empty when none is configured
+	Upstream   string `json:"upstream"` // e.g. "origin/main"; empty when none is configured; a PR's base branch name
 	Ahead      int    `json:"ahead"`
 	Behind     int    `json:"behind"`
 	InProgress string `json:"inProgress,omitempty"` // "rebase" or "merge" left half-done
 	Dirty      bool   `json:"dirty"`
+
+	// PR review sessions only: the PR number, and whether the checkout was
+	// rewritten (rebased) past the PR head on the remote, so only a
+	// force-push can update the PR.
+	PR        int  `json:"pr,omitempty"`
+	Rewritten bool `json:"rewritten,omitempty"`
+
+	ontoRef string // the ref px0 fetched the PR's base into; the harness rebases onto it and never fetches
+}
+
+// syncPRRefs copies the PR session's head and merge-base into the server and
+// index after anything moved them (push, pull), so diffs, the file tree and
+// the ahead count all measure from the new boundary.
+func (s *Server) syncPRRefs() {
+	s.pr.mu.Lock()
+	s.diffBase = s.pr.diffBase
+	s.prHeadSHA = s.pr.meta.HeadSHA
+	s.pr.mu.Unlock()
+	if s.ix != nil {
+		s.ix.SetDiffBase(s.diffBase)
+		s.ix.SetPRHead(s.prHeadSHA)
+		s.ix.SetPushedHead(s.prHeadSHA)
+	}
+	if s.gitWatcher != nil {
+		s.gitWatcher.Trigger()
+	}
+}
+
+// prSyncState is gitSyncState for a PR review: the detached checkout
+// against the PR's base branch rather than an upstream. With fetch it
+// refreshes the base first (a network call), as a rebase must start from
+// the base as it is now.
+func (s *Server) prSyncState(fetch bool) (gitSyncState, error) {
+	p := s.pr
+	root := s.ix.Root()
+	p.mu.Lock()
+	st := gitSyncState{PR: p.meta.Number, Branch: p.meta.HeadRef, Upstream: p.meta.BaseRef, ontoRef: prBaseRef(p.meta.Number)}
+	p.mu.Unlock()
+	st.InProgress = gitOpInProgress(root)
+	if st.InProgress != "" {
+		st.Code = "in-progress"
+	}
+	var err error
+	if fetch && st.InProgress == "" {
+		_, err = p.FetchBase()
+	}
+	st.Ahead, st.Behind = gitAheadBehindRef(root, st.ontoRef)
+	st.Rewritten = p.Rewritten()
+	st.Dirty = gitHasUncommittedChanges(root)
+	return st, err
 }
 
 func (s *Server) gitSyncState(root string) gitSyncState {
@@ -1930,7 +1978,16 @@ func (s *Server) handleGitSyncState(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if s.pr != nil || !gitAvailable(s.ix.Root()) {
+	if s.pr != nil {
+		st, err := s.prSyncState(r.URL.Query().Get("fetch") == "1")
+		if err != nil {
+			fail(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, st)
+		return
+	}
+	if !gitAvailable(s.ix.Root()) {
 		writeJSON(w, gitSyncState{})
 		return
 	}
@@ -1950,10 +2007,6 @@ func (s *Server) handleGitSyncAgent(w http.ResponseWriter, r *http.Request) {
 	if !s.agentOrFail(w) {
 		return
 	}
-	if s.pr != nil {
-		fail(w, http.StatusBadRequest, "rebasing is not supported in a PR review session")
-		return
-	}
 	var body struct {
 		Strategy string `json:"strategy"`
 	}
@@ -1963,7 +2016,18 @@ func (s *Server) handleGitSyncAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	root := s.ix.Root()
-	st := s.gitSyncState(root)
+	var st gitSyncState
+	if s.pr != nil {
+		// In a PR review, the branch is brought up to date with the PR's
+		// base: fetched here, fresh, so the harness never fetches itself.
+		var err error
+		if st, err = s.prSyncState(true); err != nil {
+			fail(w, http.StatusBadGateway, err.Error())
+			return
+		}
+	} else {
+		st = s.gitSyncState(root)
+	}
 	if st.InProgress == "" && st.Dirty {
 		fail(w, http.StatusConflict, "commit or discard your local changes before a "+body.Strategy)
 		return
@@ -1974,6 +2038,10 @@ func (s *Server) handleGitSyncAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if st.Upstream == "" {
 		fail(w, http.StatusBadRequest, "no upstream branch configured for "+st.Branch)
+		return
+	}
+	if st.InProgress == "" && st.PR > 0 && st.Behind == 0 {
+		fail(w, http.StatusConflict, "the PR already contains everything on "+st.Upstream+"; nothing to "+body.Strategy)
 		return
 	}
 	job, err := s.agent.StartPrompt(body.Strategy+" onto "+st.Upstream, gitSyncPrompt(body.Strategy, st))

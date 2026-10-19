@@ -142,6 +142,7 @@
         </a>
         <span id="pr-merged-badge" class="pr-merged-badge" hidden>Merged</span>
         <span id="pr-refs" class="pr-refs"></span>
+        <button id="pr-merge-state" class="pr-merge-state" type="button" hidden></button>
         <span class="grow"></span>
         <span id="pr-diff-warning" class="pr-diff-warning" hidden>&#9888; diff base unresolved</span>
         <button id="pr-readonly-note" class="pr-readonly-note" type="button" hidden title="Set GITHUB_TOKEN, set GH_TOKEN, or run 'gh auth login' -- or click to connect">No GitHub token &mdash; click to connect</button>
@@ -156,6 +157,12 @@
         <button id="pr-submit-comment" class="footer-btn pr-btn-neutral" title="Submit review with drafts, without approval or change requests">Submit Review</button>
         <button id="pr-submit-request-changes" class="footer-btn pr-btn-request-changes" hidden title="Request changes on this PR">Request Changes</button>
         <button id="pr-submit-approve" class="footer-btn pr-btn-approve" hidden title="Approve this PR">Approve</button>
+        <!-- Merge: split button -- the last-used method, and a caret to pick another (web/src/prmerge.js) -->
+        <div id="pr-merge-group" class="pr-merge-group" hidden>
+          <button id="pr-merge" class="footer-btn pr-btn-merge" type="button">Squash and merge</button>
+          <button id="pr-merge-caret" class="footer-btn pr-btn-merge pr-merge-caret" type="button" aria-haspopup="menu" title="Choose how to merge">&#9662;</button>
+          <div id="pr-merge-menu" class="pr-merge-menu" role="menu" hidden></div>
+        </div>
       </div>
     </div>
     <!-- File Tabs -->
@@ -569,6 +576,47 @@
 <div id="vim-helpsheet" hidden></div>
 
 <!-- SECTION: Settings Modal (Cmd+, / Ctrl+,) -->
+<!-- PR merge dialog: method, commit title/message (rewritable by the harness), and what blocks merging now (web/src/prmerge.js) -->
+<div id="pr-merge-modal" class="modal-overlay" hidden>
+  <div class="pr-merge-dialog" role="dialog" aria-modal="true" aria-labelledby="pr-merge-title">
+    <header class="pr-merge-head">
+      <div class="pr-merge-head-text">
+        <h2 id="pr-merge-title">Merge pull request</h2>
+        <span id="pr-merge-refs" class="pr-merge-refs"></span>
+      </div>
+      <button id="pr-merge-close" class="git-notice-close" type="button" title="Close (Esc)">&times;</button>
+    </header>
+    <div id="pr-merge-methods" class="pr-merge-methods" role="radiogroup" aria-label="Merge method"></div>
+    <p id="pr-merge-explain" class="pr-merge-explain"></p>
+    <div id="pr-merge-warnings" class="pr-merge-warnings"></div>
+    <div id="pr-merge-commit" class="pr-merge-commit">
+      <label class="pr-merge-label" for="pr-merge-commit-title">Commit title</label>
+      <input id="pr-merge-commit-title" class="pr-merge-input" type="text" spellcheck="false" autocomplete="off">
+      <div class="pr-merge-label-row">
+        <label class="pr-merge-label" for="pr-merge-commit-body">Commit message</label>
+        <a id="pr-merge-reset" href="#" class="pr-merge-link">Reset to default</a>
+      </div>
+      <textarea id="pr-merge-commit-body" class="pr-merge-input pr-merge-body" rows="8" spellcheck="false" autocomplete="off"></textarea>
+      <div id="pr-merge-ai-row" class="pr-merge-ai">
+        <input id="pr-merge-ai-instruction" class="pr-merge-input" type="text" spellcheck="false" autocomplete="off" placeholder="Instructions for this rewrite (optional), e.g. Conventional Commits, mention the ticket">
+        <div class="git-agent-picker">
+          <select id="pr-merge-harness" class="agent-harness-select" title="Coding harness"></select>
+          <select id="pr-merge-model" class="agent-model-select" title="Model"></select>
+        </div>
+        <button id="pr-merge-ai" class="footer-btn" type="button" title="Have the harness rewrite the title and message from the PR's commits and diff">Rewrite with AI</button>
+      </div>
+      <span id="pr-merge-instructions-note" class="pr-merge-note" hidden>Your <a id="pr-merge-instructions-link" href="#" class="pr-merge-link">commit message instructions</a> from Settings apply too.</span>
+    </div>
+    <ol id="pr-merge-commit-list" class="pr-merge-commit-list" hidden></ol>
+    <div id="pr-merge-err" class="agent-err" hidden></div>
+    <footer class="pr-merge-foot">
+      <span id="pr-merge-hint" class="agent-hint"></span>
+      <button id="pr-merge-cancel" class="footer-btn" type="button">Cancel</button>
+      <button id="pr-merge-confirm" class="footer-btn pr-btn-merge" type="button">Confirm merge</button>
+    </footer>
+  </div>
+</div>
+
 <div id="settings-modal" class="modal-overlay" hidden>
   <div class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <header class="settings-header">

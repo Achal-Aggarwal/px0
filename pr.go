@@ -87,19 +87,11 @@ func computeDiffBase(worktree, srcRepo, srcRemote, token string, target PRTarget
 	if srcRemote == "" {
 		srcRemote = "origin"
 	}
-	var fetchErr string
-	baseRefspec := fmt.Sprintf("refs/heads/%s:refs/px0/base/%d", baseRef, num)
-	baseRemote := srcRemote
-	if srcRepo == "" {
-		baseRemote = fmt.Sprintf("https://github.com/%s/%s.git", target.Owner, target.Repo)
-	}
-	if out, err := gitAuthCmd(token, "-C", worktree, "fetch", "--no-tags", baseRemote, baseRefspec).CombinedOutput(); err != nil {
-		fetchErr = strings.TrimSpace(string(out))
-		if fetchErr == "" {
-			fetchErr = err.Error()
+	fetchErr := fetchPRBase(worktree, srcRepo, srcRemote, token, target, baseRef, num)
+	if fetchErr == "" {
+		if mb := gitMergeBase(worktree, "HEAD", prBaseRef(num)); mb != "" {
+			diffBase = mb
 		}
-	} else if mb := gitMergeBase(worktree, "HEAD", fmt.Sprintf("refs/px0/base/%d", num)); mb != "" {
-		diffBase = mb
 	}
 	if diffBase == "HEAD" && srcRepo != "" {
 		if mb := gitMergeBase(worktree, "HEAD", srcRemote+"/"+baseRef); mb != "" {
@@ -118,6 +110,29 @@ func computeDiffBase(worktree, srcRepo, srcRemote, token string, target PRTarget
 		}
 	}
 	return diffBase, diffBaseWarning
+}
+
+// prBaseRef is where a session keeps its fetched copy of the PR's base
+// branch: the ref diffs are measured from and an agent rebase targets.
+func prBaseRef(num int) string { return fmt.Sprintf("refs/px0/base/%d", num) }
+
+// fetchPRBase force-updates prBaseRef(num) from the PR's base branch,
+// returning git's error text ("" on success). Forced, so a base branch that
+// was itself rewritten is followed rather than refused.
+func fetchPRBase(worktree, srcRepo, srcRemote, token string, target PRTarget, baseRef string, num int) string {
+	baseRemote := srcRemote
+	if srcRepo == "" {
+		baseRemote = fmt.Sprintf("https://github.com/%s/%s.git", target.Owner, target.Repo)
+	}
+	refspec := fmt.Sprintf("+refs/heads/%s:%s", baseRef, prBaseRef(num))
+	out, err := gitAuthCmd(token, "-C", worktree, "fetch", "--no-tags", baseRemote, refspec).CombinedOutput()
+	if err == nil {
+		return ""
+	}
+	if msg := redactToken(strings.TrimSpace(string(out)), token); msg != "" {
+		return msg
+	}
+	return err.Error()
 }
 
 // checkoutPR fetches a PR's head ref and checks it out into a system temp
@@ -456,16 +471,72 @@ func (p *prSession) Pull() (info string, err error) {
 	return info, nil
 }
 
+// FetchBase refreshes the session's copy of the PR's base branch and
+// returns its ref -- what an agent rebase or merge of the base targets. px0
+// fetches it itself, with the forge token, so the harness never needs
+// credentials (and never fetches at all).
+func (p *prSession) FetchBase() (string, error) {
+	p.mu.Lock()
+	worktree, srcRepo, srcRemote, token := p.worktree, p.srcRepo, p.srcRemote, p.token
+	target, baseRef, num := p.target, p.meta.BaseRef, p.meta.Number
+	p.mu.Unlock()
+	if srcRemote == "" {
+		srcRemote = "origin"
+	}
+	if msg := fetchPRBase(worktree, srcRepo, srcRemote, token, target, baseRef, num); msg != "" {
+		return "", fmt.Errorf("git fetch %s: %s", baseRef, msg)
+	}
+	return prBaseRef(num), nil
+}
+
+// refreshDiffBase re-derives diffBase from the base ref already fetched. A
+// pushed rebase onto (or merge of) a newer base moves the merge-base, and
+// the old one would fold the base's own changes into "PR changes".
+func (p *prSession) refreshDiffBase() {
+	p.mu.Lock()
+	worktree, srcRepo, srcRemote, baseRef, num := p.worktree, p.srcRepo, p.srcRemote, p.meta.BaseRef, p.meta.Number
+	p.mu.Unlock()
+	mb := gitMergeBase(worktree, "HEAD", prBaseRef(num))
+	if mb == "" && srcRepo != "" && srcRemote != "" {
+		mb = gitMergeBase(worktree, "HEAD", srcRemote+"/"+baseRef)
+	}
+	if mb == "" {
+		return
+	}
+	p.mu.Lock()
+	p.diffBase = mb
+	p.diffBaseWarning = ""
+	p.mu.Unlock()
+}
+
+// Rewritten reports whether the checkout's history no longer contains the
+// PR head on the remote -- a rebase that hasn't been (force-)pushed yet.
+// Until it is, the forge still holds the old commits: approving or merging
+// would act on those, not on what is checked out.
+func (p *prSession) Rewritten() bool {
+	p.mu.Lock()
+	worktree, head := p.worktree, p.remoteHead()
+	p.mu.Unlock()
+	return validSHA(head) && !gitIsAncestor(worktree, head, "HEAD")
+}
+
 // Push pushes the worktree's current commit to the PR's actual head branch
-// on its head repo (which may be a fork). Never force: a rejection means the
-// head moved since this checkout or since the last Pull, and the caller
-// should Pull before trying again.
-func (p *prSession) Push() error {
+// on its head repo (which may be a fork). Without force, a rejection means
+// the head moved since this checkout or since the last Pull, and the caller
+// should Pull before trying again. With force -- only ever after the
+// reviewer confirmed pushing a rebase -- it is --force-with-lease against the
+// head this session last saw, so commits someone else pushed in the meantime
+// are refused rather than silently discarded.
+func (p *prSession) Push(force bool) error {
 	p.mu.Lock()
 	worktree := p.worktree
 	cloneURL, headRef := p.meta.HeadRepoCloneURL, p.meta.HeadRef
 	target, token := p.target, p.token
+	lease := p.remoteHead()
 	p.mu.Unlock()
+	if force && !validSHA(lease) {
+		return errors.New("can't force-push: the PR head this checkout started from is unknown")
+	}
 
 	if cloneURL == "" {
 		cloneURL = fmt.Sprintf("https://github.com/%s/%s.git", target.Owner, target.Repo)
@@ -477,9 +548,17 @@ func (p *prSession) Push() error {
 		pushURL = httpsRemoteURL(cloneURL)
 	}
 	refspec := fmt.Sprintf("HEAD:refs/heads/%s", headRef)
-	out, err := gitAuthCmd(token, "-C", worktree, "push", pushURL, refspec).CombinedOutput()
+	args := []string{"-C", worktree, "push"}
+	if force {
+		args = append(args, fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", headRef, lease))
+	}
+	out, err := gitAuthCmd(token, append(args, pushURL, refspec)...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git push: %w: %s", err, redactToken(strings.TrimSpace(string(out)), token))
+		msg := redactToken(strings.TrimSpace(string(out)), token)
+		if force && strings.Contains(msg, "stale info") {
+			return fmt.Errorf("git push: someone else pushed to %s since this checkout; pull their commits and rebase again: %s", headRef, msg)
+		}
+		return fmt.Errorf("git push: %w: %s", err, msg)
 	}
 	// What you pushed is now part of the PR: the PR head moves up to it, so
 	// those commits leave "Your changes" and join "PR changes".
@@ -489,6 +568,7 @@ func (p *prSession) Push() error {
 		p.pushedSHA = ""
 		p.mu.Unlock()
 	}
+	p.refreshDiffBase()
 	return nil
 }
 
@@ -735,6 +815,215 @@ func (s *Server) handlePRSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	p.mu.Unlock()
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// prMergeMessage is a commit title and body, as prefilled in the merge dialog.
+type prMergeMessage struct {
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+// prMergeDefaults are the forge-neutral starting points the merge dialog
+// prefills for each method that writes a commit: the conventions GitHub,
+// GitLab and Gitea all default to. Rebase writes no commit of its own.
+// commits is newest first, as git log lists them.
+func prMergeDefaults(meta PRMeta, commits []UnpushedCommit) map[string]prMergeMessage {
+	var body strings.Builder
+	for i := len(commits) - 1; i >= 0; i-- {
+		fmt.Fprintf(&body, "* %s\n", commits[i].Subject)
+	}
+	return map[string]prMergeMessage{
+		MergeMethodMerge:  {Title: fmt.Sprintf("Merge pull request #%d from %s", meta.Number, meta.HeadRef), Message: meta.Title},
+		MergeMethodSquash: {Title: fmt.Sprintf("%s (#%d)", meta.Title, meta.Number), Message: strings.TrimSpace(body.String())},
+	}
+}
+
+// prCommits lists the PR's own commits (merge-base..PR head), newest first.
+func (s *Server) prCommits() []UnpushedCommit {
+	p := s.pr
+	p.mu.Lock()
+	from, to := p.diffBase, p.meta.HeadSHA
+	p.mu.Unlock()
+	if !validSHA(from) || !validSHA(to) {
+		return nil
+	}
+	return gitCommitsInRange(s.ix.Root(), from+".."+to, 200)
+}
+
+func validMergeMethod(m string) bool {
+	return m == MergeMethodMerge || m == MergeMethodSquash || m == MergeMethodRebase
+}
+
+// handlePRMergeStatus reports whether the PR can merge and how, plus what the
+// merge dialog needs to prefill: per-method default messages and the PR's
+// commits. Always live from the forge; mergeability changes under you.
+func (s *Server) handlePRMergeStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.prOrFail(w) {
+		return
+	}
+	p := s.pr
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	st, err := p.provider.MergeStatus(ctx, p.target, p.token)
+	if err != nil {
+		fail(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	commits := s.prCommits()
+	if commits == nil {
+		commits = []UnpushedCommit{}
+	}
+	p.mu.Lock()
+	meta, writeAccess := p.meta, p.writeAccess
+	p.mu.Unlock()
+	root := s.ix.Root()
+	hasInstruction := false
+	if cfg := readSettings(); cfg.GitCommitMessageInstruction != nil {
+		hasInstruction = strings.TrimSpace(*cfg.GitCommitMessageInstruction) != ""
+	}
+	writeJSON(w, map[string]any{
+		"status":   st,
+		"canMerge": st.CanMerge && writeAccess && p.token != "",
+		// The forge holds commits this checkout hasn't seen: merging now
+		// would land code nobody here reviewed. Pull first.
+		"stale":          st.HeadSHA != "" && st.HeadSHA != meta.HeadSHA,
+		"rewritten":      p.Rewritten(),
+		"inProgress":     gitOpInProgress(root),
+		"unpushed":       gitCountSince(root, meta.HeadSHA),
+		"defaults":       prMergeDefaults(meta, commits),
+		"commits":        commits,
+		"base":           meta.BaseRef,
+		"hasInstruction": hasInstruction,
+	})
+}
+
+// handlePRMerge merges the PR on the forge, exactly as confirmed in the
+// dialog. The forge is told the head the reviewer saw, so a PR that moved
+// since is refused there rather than merged unseen.
+func (s *Server) handlePRMerge(w http.ResponseWriter, r *http.Request) {
+	if !s.prOrFail(w) {
+		return
+	}
+	if !localPost(w, r) {
+		return
+	}
+	p := s.pr
+	if p.token == "" {
+		fail(w, http.StatusForbidden, "no auth token configured; merging requires a token")
+		return
+	}
+	if !p.writeAccess {
+		fail(w, http.StatusForbidden, "no push access on this repository; merging is not allowed")
+		return
+	}
+	var body struct {
+		Method  string `json:"method"`
+		Title   string `json:"title"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil || !validMergeMethod(body.Method) {
+		fail(w, http.StatusBadRequest, "method must be merge, squash, or rebase")
+		return
+	}
+	if op := gitOpInProgress(s.ix.Root()); op != "" {
+		fail(w, http.StatusConflict, "a "+op+" is in progress in this checkout; finish or abort it first")
+		return
+	}
+	if p.Rewritten() {
+		fail(w, http.StatusConflict, "this checkout was rebased but not pushed; force-push it first, or the forge merges the old commits")
+		return
+	}
+	p.mu.Lock()
+	head := p.meta.HeadSHA
+	p.mu.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, err := p.provider.Merge(ctx, p.target, p.token, PRMergeRequest{
+		Method:  body.Method,
+		Title:   strings.TrimSpace(body.Title),
+		Message: strings.TrimSpace(body.Message),
+		HeadSHA: head,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrPRHeadMoved):
+			fail(w, http.StatusConflict, "the PR has new commits since this checkout; pull and review them, then merge")
+		case errors.Is(err, ErrPRNotMergeable):
+			fail(w, http.StatusConflict, err.Error())
+		default:
+			fail(w, http.StatusBadGateway, err.Error())
+		}
+		return
+	}
+	// The bar flips to Merged from the forge's own account of it.
+	if fresh, err := p.provider.FetchPR(ctx, p.target, p.token); err == nil {
+		p.mu.Lock()
+		p.meta.State, p.meta.Merged, p.meta.MergedAt = fresh.State, fresh.Merged, fresh.MergedAt
+		p.mu.Unlock()
+	} else {
+		p.mu.Lock()
+		p.meta.Merged = true
+		p.mu.Unlock()
+	}
+	writeJSON(w, map[string]any{"ok": true, "sha": res.SHA, "message": res.Message})
+}
+
+// handlePRMergeMessage has the harness write (or rewrite) the commit message
+// a squash or merge commit lands with, from the PR's commits and diff, the
+// user's commit message instructions in Settings, and any one-off
+// instruction typed in the dialog. It only writes text: px0 shows it in the
+// dialog, where it can still be edited before anything is merged.
+func (s *Server) handlePRMergeMessage(w http.ResponseWriter, r *http.Request) {
+	if !s.prOrFail(w) {
+		return
+	}
+	if !localPost(w, r) {
+		return
+	}
+	if !s.agentOrFail(w) {
+		return
+	}
+	var body struct {
+		Method      string `json:"method"`
+		Instruction string `json:"instruction"`
+		Title       string `json:"title"`
+		Message     string `json:"message"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil || (body.Method != MergeMethodSquash && body.Method != MergeMethodMerge) {
+		fail(w, http.StatusBadRequest, "method must be squash or merge")
+		return
+	}
+	p := s.pr
+	p.mu.Lock()
+	meta, from := p.meta, p.diffBase
+	p.mu.Unlock()
+	if !validSHA(from) {
+		fail(w, http.StatusConflict, "the PR's merge base is unresolved, so there is no diff to describe")
+		return
+	}
+	root := s.ix.Root()
+	instructions := []string{}
+	if cfg := readSettings(); cfg.GitCommitMessageInstruction != nil {
+		if t := strings.TrimSpace(*cfg.GitCommitMessageInstruction); t != "" {
+			instructions = append(instructions, t)
+		}
+	}
+	if t := strings.TrimSpace(body.Instruction); t != "" {
+		instructions = append(instructions, t)
+	}
+	draft := strings.TrimSpace(strings.TrimSpace(body.Title) + "\n\n" + strings.TrimSpace(body.Message))
+	prompt := mergeMessagePrompt(body.Method, meta, s.prCommits(),
+		gitRangeStat(root, from, meta.HeadSHA), gitRangeDiff(root, from, meta.HeadSHA), draft, instructions)
+	job, err := s.agent.StartPrompt(body.Method+" message", prompt)
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, errAgentNone) {
+			code = http.StatusBadRequest
+		}
+		fail(w, code, err.Error())
+		return
+	}
+	writeJSON(w, job)
 }
 
 // handleLaunchPR lets an already-running px0 open another PR without

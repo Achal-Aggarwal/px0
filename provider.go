@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -50,6 +51,59 @@ type PRComment struct {
 	URL       string `json:"url"`
 }
 
+// Merge methods, named for what lands on the base branch rather than for any
+// one forge's API. Each provider maps them onto its own vocabulary (GitHub's
+// merge/squash/rebase, GitLab's squash flag plus merge-method setting,
+// Bitbucket's merge_commit/squash/fast_forward, Gitea's Do field).
+const (
+	MergeMethodMerge  = "merge"  // a merge commit joining the head into the base
+	MergeMethodSquash = "squash" // the PR's commits squashed into one commit
+	MergeMethodRebase = "rebase" // each commit replayed onto the base, no merge commit
+)
+
+// Merge states, normalized across forges. PRMergeStatus.State is one of these.
+const (
+	MergeStateClean     = "clean"     // mergeable, nothing in the way
+	MergeStateUnstable  = "unstable"  // mergeable, but some non-required checks are failing
+	MergeStateConflicts = "conflicts" // the head conflicts with the base branch
+	MergeStateBehind    = "behind"    // no conflicts, but the base requires the head to be up to date
+	MergeStateBlocked   = "blocked"   // branch protection (required reviews or checks) refuses it
+	MergeStateDraft     = "draft"     // still a draft
+	MergeStateUnknown   = "unknown"   // the forge hasn't computed it yet; ask again shortly
+	MergeStateClosed    = "closed"
+	MergeStateMerged    = "merged"
+)
+
+// PRMergeStatus is whether, and how, the PR can be merged right now.
+type PRMergeStatus struct {
+	State    string   `json:"state"`
+	Reason   string   `json:"reason,omitempty"` // the forge's own detail, when it gives one
+	Methods  []string `json:"methods"`          // allowed on this repository, in the forge's display order
+	CanMerge bool     `json:"canMerge"`         // the token has the rights to merge
+	HeadSHA  string   `json:"headSha"`          // the head the status was computed for
+}
+
+// PRMergeRequest is one merge, as the reviewer confirmed it.
+type PRMergeRequest struct {
+	Method  string
+	Title   string // commit title; ignored for MergeMethodRebase
+	Message string // commit body; ignored for MergeMethodRebase
+	HeadSHA string // the head the reviewer saw; a PR that has moved past it must not be merged
+}
+
+// PRMergeResult is what the forge reports back about a completed merge.
+type PRMergeResult struct {
+	SHA     string `json:"sha"`
+	Message string `json:"message,omitempty"`
+}
+
+// Errors a provider's Merge wraps, so callers can tell a stale head or a PR
+// that can't merge from a transport failure without parsing forge text.
+var (
+	ErrPRHeadMoved    = errors.New("the PR head moved since it was loaded")
+	ErrPRNotMergeable = errors.New("the PR cannot be merged")
+)
+
 // GitProvider abstracts forge-specific operations (GitHub, GitLab, etc.)
 // for pull/merge request reviews.
 type GitProvider interface {
@@ -86,6 +140,16 @@ type GitProvider interface {
 	// ReplyToReviewComment posts an immediate, threaded reply to an existing
 	// inline review comment.
 	ReplyToReviewComment(ctx context.Context, target PRTarget, token string, commentID int64, body string) (PRComment, error)
+
+	// MergeStatus reports whether the PR can merge right now and which merge
+	// methods the repository allows. A forge that computes mergeability
+	// lazily reports MergeStateUnknown until it has.
+	MergeStatus(ctx context.Context, target PRTarget, token string) (PRMergeStatus, error)
+
+	// Merge merges the PR on the forge. It must refuse, wrapping
+	// ErrPRHeadMoved, when the PR head is no longer req.HeadSHA, and wrap
+	// ErrPRNotMergeable when the forge refuses the merge itself.
+	Merge(ctx context.Context, target PRTarget, token string, req PRMergeRequest) (PRMergeResult, error)
 }
 
 var defaultProviders = []GitProvider{

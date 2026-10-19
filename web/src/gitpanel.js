@@ -12,7 +12,7 @@ import { openSettings } from './settings.js';
 import { layout, render } from './renderer.js';
 import { refreshUnpushed } from './unpushed.js';
 import { openFile } from './tabs.js';
-import { on } from './bus.js';
+import { on, emit } from './bus.js';
 import { commitFileRows, COMMIT_FILES_PAGE, loadCommitFiles, cachedCommitFiles } from './commitfiles.js';
 import { triggerRefresh } from './gitstream.js';
 import { registerAgentPicker } from './agent.js';
@@ -54,7 +54,7 @@ export function initGitPanel() {
   $('#git-stage-all')?.addEventListener('click', doStageAll);
   $('#git-commit')?.addEventListener('click', doCommit);
   $('#git-commit-msg')?.addEventListener('input', () => $('#git-commit-msg')?.classList.remove('warn-border'));
-  $('#git-push')?.addEventListener('click', doPush);
+  $('#git-push')?.addEventListener('click', () => (rewritten ? confirmForcePush() : doPush()));
   $('#git-pull')?.addEventListener('click', doPull);
   $('#git-generate-msg')?.addEventListener('click', doCommitWithAI);
   $('#git-token-nudge')?.addEventListener('click', () => {
@@ -136,10 +136,18 @@ export function updateGitPanel(payload) {
 
   // Push button is enabled only when there are unpushed commits (ahead > 0)
   const pushBtn = $('#git-push');
+  if (payload && !!payload.rewritten !== rewritten) {
+    rewritten = !!payload.rewritten;
+    emitSync();
+  }
   if (pushBtn) {
     const ahead = payload?.ahead ?? 0;
     pushBtn.disabled = ahead === 0 || !!syncJob;
-    if (ahead > 0) {
+    if (ahead > 0 && rewritten) {
+      // A rebased PR branch only reaches the PR by replacing its commits.
+      pushBtn.textContent = 'Force-push';
+      pushBtn.title = `This checkout was rebased: replace the commits on ${S.meta?.pr?.head || 'the PR branch'} with it (asks first)`;
+    } else if (ahead > 0) {
       pushBtn.textContent = `Push (${ahead})`;
       pushBtn.title = S.meta?.pr
         ? `Push ${ahead} of your commit${ahead > 1 ? 's' : ''} to PR #${S.meta.pr.number} (${S.meta.pr.head})`
@@ -274,7 +282,7 @@ async function doCommit() {
   }
 }
 
-async function doPush() {
+async function doPush(force = false) {
   const btn = $('#git-push');
   const prevText = btn?.textContent || 'Push';
   if (btn) {
@@ -282,9 +290,11 @@ async function doPush() {
     btn.textContent = 'Pushing...';
   }
   try {
-    await apiPostJson('/api/git/push', {});
+    await apiPostJson('/api/git/push', force ? { force: true } : {});
+    rewritten = false;
+    emitSync();
     clearGitNotice();
-    showToast('✓', S.meta?.pr ? `Pushed to PR #${S.meta.pr.number}` : 'Pushed');
+    showToast('✓', S.meta?.pr ? `${force ? 'Force-pushed' : 'Pushed'} to PR #${S.meta.pr.number}` : 'Pushed');
     if (btn) {
       btn.textContent = 'Push';
       flashActionSuccess(btn, 'Pushed');
@@ -345,6 +355,59 @@ async function afterHistoryChange() {
   await triggerRefresh();
 }
 
+/* ---------- PR branch: rebase onto the base, force-push ----------
+   In a PR review the same agent flow brings the PR up to date with its base
+   branch: the PR bar asks for it ('pr:resolve') when the forge reports
+   conflicts or a branch that is behind. A rebase rewrites the PR's commits,
+   so it only reaches the PR by a force-push, and that is always confirmed
+   here first. 'git:sync' tells the PR bar what is going on, so Approve and
+   Merge never act on commits the checkout has since moved past. */
+
+let rewritten = false; // PR mode: HEAD rebased past the PR head, not yet force-pushed
+
+function emitSync() {
+  emit('git:sync', { running: !!syncJob, inProgress: syncInProgress, rewritten });
+}
+
+let syncInProgress = ''; // "rebase"/"merge" left half-done, as last seen
+
+async function resolvePRBase() {
+  if (syncJob) return;
+  const base = S.meta?.pr?.base || 'the base branch';
+  notice({ tone: 'busy', title: `Fetching ${base}...`, closable: false });
+  let st;
+  try {
+    st = await api('/api/git/sync-state?fetch=1');
+  } catch (e) {
+    showGitError(`Could not fetch ${base}`, e.message);
+    return;
+  }
+  syncInProgress = st.inProgress || '';
+  emitSync();
+  if (st.inProgress) offerUnfinished(st);
+  else if (st.rewritten) confirmForcePush();
+  else if (st.behind > 0) offerSync(st);
+  else {
+    notice({
+      tone: 'ok', title: `Up to date with ${base}`,
+      html: `This checkout already has everything on ${code(base)}. If the PR still shows conflicts, the forge may not have recomputed them yet.`,
+    });
+  }
+}
+
+function confirmForcePush() {
+  const pr = S.meta?.pr || {};
+  notice({
+    tone: 'warn', title: `Force-push to PR #${pr.number}?`,
+    html: `This checkout was rebased, so its commits replace the ones on ${code(pr.head)} rather than adding to them.` +
+      `<span class="hint">Pushed with a lease: if anyone else pushed to ${esc(pr.head || 'the branch')} since this checkout, the push is refused and nothing of theirs is lost.</span>`,
+    actions: [
+      { label: 'Force-push', primary: true, title: `git push --force-with-lease to ${pr.head}`, run: () => doPush(true) },
+      { label: 'Not now', run: clearGitNotice },
+    ],
+  });
+}
+
 /* ---------- notice: git outcomes, inline ----------
    Every git failure lands in this one card at the top of the panel, never in
    a global toast. A pull that can't fast-forward turns into an offer to
@@ -362,6 +425,9 @@ function initNotice() {
   if (n && harnessSelect && modelSelect) registerAgentPicker({ el: n, harnessSelect, modelSelect });
   // Stage ticks in the file tree report their failures here too.
   on('git:error', ({ title, message }) => showGitError(title, message));
+  on('pr:resolve', resolvePRBase);
+  on('pr:force-push', confirmForcePush);
+  on('pr:pull', doPull);
 }
 
 /**
@@ -432,18 +498,24 @@ const hasHarness = () => (S.meta?.agents || []).some(h => h.installed);
 // ways the harness can bring the branch up to date.
 function offerSync(st, err = '') {
   const up = st.upstream || 'upstream';
-  let html = `${code(st.branch)} and ${code(up)} have diverged: ${plural(st.ahead || 0, 'local commit')} not upstream, ${st.behind || 0} incoming.`;
+  const pr = st.pr > 0;
+  const title = pr ? `PR #${st.pr} is behind ${up}` : "Can't fast-forward";
+  let html = pr
+    ? `${code(st.branch)} is missing ${plural(st.behind || 0, 'commit')} from ${code(up)}; the PR has ${plural(st.ahead || 0, 'commit')} of its own.`
+    : `${code(st.branch)} and ${code(up)} have diverged: ${plural(st.ahead || 0, 'local commit')} not upstream, ${st.behind || 0} incoming.`;
   if (!hasHarness()) {
     notice({
-      tone: 'warn', title: "Can't fast-forward",
-      html: html + `<span class="hint">Install a coding harness to rebase or merge from here, or run ${code('git pull --rebase')} in a terminal.</span>`,
+      tone: 'warn', title,
+      html: html + `<span class="hint">Install a coding harness to rebase or merge from here, or run ${code(pr ? 'git rebase ' + up : 'git pull --rebase')} in a terminal.</span>`,
     });
     return;
   }
-  html += `<span class="hint">Rebase replays your commits on top of ${esc(up)} for a straight history; merge joins the two with a merge commit. The harness resolves any conflicts. Nothing is pushed.</span>`;
+  html += pr
+    ? `<span class="hint">Rebase replays the PR's commits on top of ${esc(up)} for a straight history, then needs a force-push to update the PR. Merge brings ${esc(up)} in with a merge commit and a normal push. The harness resolves any conflicts; nothing is pushed until you say so.</span>`
+    : `<span class="hint">Rebase replays your commits on top of ${esc(up)} for a straight history; merge joins the two with a merge commit. The harness resolves any conflicts. Nothing is pushed.</span>`;
   if (err) html += `<span class="hint" style="color:var(--err)">${esc(err)}</span>`;
   notice({
-    tone: 'warn', title: "Can't fast-forward", html, picker: true,
+    tone: 'warn', title, html, picker: true,
     actions: [
       { label: 'Rebase with AI', primary: true, title: `Have the harness run git rebase ${up} and resolve conflicts`, run: () => startSync('rebase', st) },
       { label: 'Merge with AI', title: `Have the harness run git merge ${up} and resolve conflicts`, run: () => startSync('merge', st) },
@@ -475,6 +547,7 @@ async function startSync(strategy, st) {
   }
   syncJob = job.id;
   setSyncButtons();
+  emitSync();
   const verb = strategy === 'rebase' ? 'Rebasing' : 'Merging';
   const up = st.upstream || 'upstream';
   notice({
@@ -511,6 +584,9 @@ async function finishSync(strategy, j) {
   try {
     st = await api('/api/git/sync-state');
   } catch {}
+  syncInProgress = st.inProgress || '';
+  rewritten = !!st.rewritten;
+  emitSync();
   await afterHistoryChange();
   const done = strategy === 'rebase' ? 'Rebased' : 'Merged';
   if (st.inProgress) {
@@ -521,6 +597,18 @@ async function finishSync(strategy, j) {
       tone: 'err', title: `${strategy === 'rebase' ? 'Rebase' : 'Merge'} didn't complete`, log,
       html: `${esc(why)} ${code(st.branch)} is unchanged: still ${plural(st.ahead || 0, 'local commit')} and ${st.behind} incoming.`,
       actions: [{ label: 'Try again', run: () => offerSync(st) }],
+    });
+  } else if (st.pr > 0) {
+    const pr = S.meta?.pr || {};
+    notice({
+      tone: 'ok', title: `${done} onto ${st.upstream}`, log,
+      html: st.rewritten
+        ? `The PR's commits now sit on top of ${code(st.upstream)}. Review the result; force-pushing replaces the commits on ${code(pr.head)}.` +
+          `<span class="hint">Approve and Merge wait until it's pushed, so they never act on the old commits.</span>`
+        : `${code(pr.head)} now contains ${code(st.upstream)}. Review the result, then push to update the PR.`,
+      actions: st.rewritten
+        ? [{ label: `Force-push to PR #${st.pr}`, primary: true, title: `git push --force-with-lease to ${pr.head}`, run: () => doPush(true) }]
+        : [{ label: 'Push to PR', primary: true, run: () => doPush() }],
     });
   } else {
     const ahead = st.ahead || 0;
@@ -541,8 +629,13 @@ async function abortSync() {
     showGitError('Abort failed', e.message);
     return;
   }
+  syncInProgress = '';
+  emitSync();
   await afterHistoryChange();
-  notice({ tone: 'ok', title: 'Aborted', html: 'The branch is back where it was. Pull again to choose rebase or merge.' });
+  notice({
+    tone: 'ok', title: 'Aborted',
+    html: S.meta?.pr ? 'The checkout is back where it was.' : 'The branch is back where it was. Pull again to choose rebase or merge.',
+  });
 }
 
 // Pull and Push stay disabled while the harness rewrites history under them.
@@ -557,9 +650,11 @@ function setSyncButtons() {
 // A rebase or merge left half-done (a closed tab mid-run, a terminal) is
 // surfaced on load rather than discovered later as a confusing dirty tree.
 async function checkUnfinishedSync() {
-  if (S.meta?.pr) return;
   try {
     const st = await api('/api/git/sync-state');
+    syncInProgress = st.inProgress || '';
+    rewritten = !!st.rewritten;
+    emitSync();
     if (st.inProgress) offerUnfinished(st);
   } catch {}
 }
