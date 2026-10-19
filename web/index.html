@@ -118,6 +118,9 @@
       <a class="mini" href="https://github.com/px0-ai/px0" target="_blank" rel="noopener" title="px0 on GitHub" aria-label="px0 on GitHub">
         <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
+      <button class="mini" id="btn-help" title="Help & Tips" aria-label="Help & Tips">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </button>
       <button class="mini" id="btn-theme" title="Cycle theme (pick one: Command Palette > Select Theme)" aria-label="Cycle theme">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="1" fill="currentColor"/><circle cx="17.5" cy="10.5" r="1" fill="currentColor"/><circle cx="8.5" cy="7.5" r="1" fill="currentColor"/><circle cx="6.5" cy="12.5" r="1" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
       </button>
@@ -379,6 +382,31 @@
     <!-- LSP management menu, opened from LSP status bar button -->
     <div id="lsp-menu" role="menu" hidden></div>
 
+    <!-- Floating Async Tip Widget (web/src/tips.js) -->
+    <div id="tip-widget" class="tip-widget" hidden>
+      <div class="tip-widget-head">
+        <div class="tip-widget-tag-group">
+          <svg class="tip-widget-bulb" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/></svg>
+          <span class="tip-widget-label">Tip</span>
+          <button id="tip-widget-tag" class="tip-tag-pill" type="button" title="Filter tips by this category"></button>
+          <span id="tip-widget-count" class="tip-count-chip"></span>
+        </div>
+        <button id="tip-widget-close" class="tip-btn-close" type="button" title="Dismiss tip">&times;</button>
+      </div>
+      <div class="tip-widget-body">
+        <h4 id="tip-widget-title" class="tip-widget-title"></h4>
+        <div id="tip-widget-content" class="tip-widget-content"></div>
+      </div>
+      <div class="tip-widget-foot">
+        <button id="tip-widget-hide-perm" class="tip-btn-link" type="button" title="Permanently hide tips in the interface">Don't show tips</button>
+        <div class="tip-widget-actions">
+          <button id="tip-widget-prev" class="tip-btn-nav" type="button" title="Previous tip">&lsaquo;</button>
+          <button id="tip-widget-next" class="tip-btn-nav" type="button" title="Next tip">&rsaquo;</button>
+          <button id="tip-widget-all" class="tip-btn-all" type="button" title="View all tips in IDE">All Tips</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Bottom Status Bar -->
     <footer id="status">
       <!-- Selection actions: replace the buttons and size below while code is selected -->
@@ -434,6 +462,7 @@
         <button class="inspector-tab" data-itab="symbols" title="View file symbols outline">Symbols</button>
         <button class="inspector-tab" data-itab="calls" title="Trace callers and callees ({Alt+Shift+H})">Calls</button>
         <button class="inspector-tab" data-itab="search" title="Search text across workspace ({Mod+Shift+F})">Search</button>
+        <button class="inspector-tab" data-itab="tips" id="tab-tips" title="Tips & Tricks">Tips</button>
       </div>
       <div class="inspector-head-actions">
         <button id="btn-close-right" class="mini" title="Close inspector (Esc)">&#10005;</button>
@@ -558,6 +587,25 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- Right Pane 6: Tips & Tricks. Browse, search and filter all px0 tips. web/src/tips.js owns it. -->
+    <section class="inspector-pane" id="pane-right-tips">
+      <div class="inspector-bar tips-header-bar">
+        <div class="tips-search-wrap">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="tips-filter" placeholder="Filter tips..." autocomplete="off" spellcheck="false">
+        </div>
+        <span id="tips-count-badge" class="inspector-badge">0 tips</span>
+        <button id="btn-refresh-tips" class="mini" title="Reload tips from px0.ai">&#x21bb;</button>
+      </div>
+      <div class="tips-toolbar-sub">
+        <label class="tips-setting-toggle" title="Toggle automatic tip popups in interface">
+          <input type="checkbox" id="tips-toggle-popup" checked>
+          <span>Show tip popups in interface</span>
+        </label>
+      </div>
+      <div class="panel-body" id="tips-list"></div>
     </section>
   </aside>
 </div>

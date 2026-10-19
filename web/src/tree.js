@@ -262,29 +262,36 @@ export async function revealFile(path) {
   }
 }
 
-export async function expandDirtyDirs(container = treeEl, version = expansionVersion) {
+export async function expandDirtyDirs(container = treeEl, version = expansionVersion, seen = new Set()) {
   const isCurrent = () => version === expansionVersion && treeEl.classList.contains('changed-only');
   if (!isCurrent()) return;
-  const dirtyRows = Array.from(container.querySelectorAll('.tr.dir.dirty:not(.open)'));
+  const dirtyRows = Array.from(container.querySelectorAll('.tr.dir.dirty'));
   for (const dirRow of dirtyRows) {
     if (!isCurrent()) return;
     const path = dirRow.dataset.dir;
-    const kids = container.querySelector('[data-kids="' + CSS.escape(path) + '"]');
-    if (kids) {
-      dirRow.classList.add('open');
-      kids.classList.add('open');
-      openDirs.add(path);
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    const kids = treeEl.querySelector('[data-kids="' + CSS.escape(path) + '"]');
+    if (!kids) continue;
+
+    dirRow.classList.add('open');
+    kids.classList.add('open');
+    openDirs.add(path);
+
+    if (!kids.dataset.loaded) {
       const loaded = await drawTree(path, kids, path.split('/').length, isCurrent);
       if (!isCurrent()) return;
       if (loaded) {
         kids.dataset.loaded = '1';
-        await expandDirtyDirs(kids, version);
       } else {
         dirRow.classList.remove('open');
         kids.classList.remove('open');
         openDirs.delete(path);
+        continue;
       }
     }
+
+    await expandDirtyDirs(kids, version, seen);
   }
 }
 
@@ -317,6 +324,7 @@ export async function patchTreeGitStatus(statuses = {}, dirtyDirs = {}, staged =
 
   if (needRefresh) {
     await refreshTree();
+    if (inGitMode()) await expandDirtyDirs();
     markTreeCleanState();
     return;
   }
@@ -439,7 +447,7 @@ export function markTreeCleanState() {
 }
 
 export function hasGitView() {
-  return !!(S.meta?.git && ((S.meta.gitChanges > 0) || (S.unpushedCount > 0)));
+  return !!(S.meta?.git && ((S.meta.gitChanges > 0) || (S.unpushedCount > 0) || S.meta?.pr));
 }
 
 export function inGitMode() {
@@ -463,7 +471,7 @@ export function updateSidebarToggleState() {
   }
 }
 
-export async function setSidebarMode(mode, { expandDirty = false } = {}) {
+export async function setSidebarMode(mode, { expandDirty = true } = {}) {
   const btnChanged = $('#btn-changed');
   const btnFiles = $('#btn-files');
   const btnCollapse = $('#btn-collapse-tree');
@@ -585,7 +593,7 @@ export function initTree() {
 
   $('#btn-changed')?.addEventListener('click', async () => {
     if (!hasGitView()) return;
-    await setSidebarMode('git');
+    await setSidebarMode('git', { expandDirty: true });
   });
 
   $('#btn-files')?.addEventListener('click', async () => {

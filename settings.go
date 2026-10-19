@@ -42,6 +42,7 @@ type settings struct {
 	GitCommitMessageInstruction *string  `json:"git.commitMessageInstruction,omitempty"`
 	ServerBasePath              *string  `json:"server.basePath,omitempty"`
 	ExplorerAutoReveal          *bool    `json:"explorer.autoReveal,omitempty"`
+	TipsEnabled                 *bool    `json:"tips.enabled,omitempty"`
 }
 
 var settingsMu sync.Mutex
@@ -426,6 +427,14 @@ var settingsSchema = []settingSchemaItem{
 		Category:    "Server",
 		Type:        "string",
 		Default:     "/",
+	},
+	{
+		Key:         "tips.enabled",
+		Title:       "Show Tips in Interface",
+		Description: "Controls whether px0 periodically shows helpful tips and tricks in the interface.",
+		Category:    "General",
+		Type:        "boolean",
+		Default:     true,
 	},
 }
 
