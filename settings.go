@@ -33,6 +33,7 @@ type settings struct {
 	TablePreviewOpen            *bool    `json:"table.preview.open,omitempty"`
 	TelemetryEnabled            *bool    `json:"telemetry.enabled,omitempty"`
 	GitHubToken                 *string  `json:"github.token,omitempty"`
+	GitLabToken                 *string  `json:"gitlab.token,omitempty"`
 	GitCommitMessageInstruction *string  `json:"git.commitMessageInstruction,omitempty"`
 	ServerBasePath              *string  `json:"server.basePath,omitempty"`
 	ExplorerAutoReveal          *bool    `json:"explorer.autoReveal,omitempty"`
@@ -358,6 +359,15 @@ var settingsSchema = []settingSchemaItem{
 		Title:       "GitHub Token",
 		Description: "Personal access token used to check out and review pull requests (px0 <url>). Takes precedence over the GITHUB_TOKEN environment variable and 'gh auth token'.",
 		Category:    "GitHub",
+		Type:        "string",
+		Default:     "",
+		Secret:      true,
+	},
+	{
+		Key:         "gitlab.token",
+		Title:       "GitLab Token",
+		Description: "Personal access token (api scope) used to check out, review and merge GitLab merge requests, on gitlab.com or a self-hosted instance. Sent only to gitlab.com, or to the host named by the GITLAB_HOST environment variable; other self-hosted instances use the token 'glab auth login' stored for them. Takes precedence over the GITLAB_TOKEN environment variable.",
+		Category:    "GitLab",
 		Type:        "string",
 		Default:     "",
 		Secret:      true,

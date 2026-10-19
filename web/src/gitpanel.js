@@ -6,7 +6,7 @@
 import { $, esc, S, api, apiPostJson } from './state.js';
 import { showToast, copyToClipboard, flashActionSuccess } from './ui.js';
 import { reindexWorkspace } from './panels.js';
-import { refreshPRMeta } from './pr.js';
+import { refreshPRMeta, nudgeForgeToken, forgeInfo } from './pr.js';
 import { reloadOpenTabs } from './tabs.js';
 import { openSettings } from './settings.js';
 import { layout, render } from './renderer.js';
@@ -57,10 +57,7 @@ export function initGitPanel() {
   $('#git-push')?.addEventListener('click', () => (rewritten ? confirmForcePush() : doPush()));
   $('#git-pull')?.addEventListener('click', doPull);
   $('#git-generate-msg')?.addEventListener('click', doCommitWithAI);
-  $('#git-token-nudge')?.addEventListener('click', () => {
-    showToast('!', 'No GitHub token found: set GITHUB_TOKEN, set GH_TOKEN, or run `gh auth login` -- or add one below.', 5000);
-    openSettings('ui', 'GitHub', 'github.token');
-  });
+  $('#git-token-nudge')?.addEventListener('click', nudgeForgeToken);
   $('#git-write-msg-link')?.addEventListener('click', e => {
     e.preventDefault();
     toggleCommitMsgBox();
@@ -90,9 +87,13 @@ function updateGitPanelVisibility() {
   p.hidden = !S.meta?.git;
   const nudge = $('#git-token-nudge');
   if (nudge) {
-    // The PR bar already carries its own "no GitHub token" note, so skip
-    // this one in PR review mode to avoid nudging twice.
-    nudge.hidden = !S.meta?.git || S.meta?.githubToken !== false || !!S.meta?.pr;
+    // Only for a remote on a forge px0 knows. The PR bar already carries its
+    // own "no token" note, so skip this one in PR review mode to avoid
+    // nudging twice.
+    const forge = S.meta?.forge;
+    nudge.hidden = !S.meta?.git || !forge || forge.hasToken || !!S.meta?.pr;
+    const label = nudge.querySelector('span');
+    if (forge && label) label.textContent = `No ${forgeInfo().label} token configured — add one`;
   }
 }
 

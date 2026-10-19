@@ -106,8 +106,12 @@ function renderBar() {
   if (!b || !meta) return;
   b.hidden = false;
   $('#pr-badge').textContent = '#' + meta.number;
+  const forge = forgeInfo();
   const link = $('#pr-link');
-  if (link) link.href = meta.url || '#';
+  if (link) {
+    link.href = meta.url || '#';
+    link.title = 'Open on ' + forge.label;
+  }
   const mb = $('#pr-merged-badge');
   if (mb) mb.hidden = !meta.merged;
   $('#pr-title').textContent = meta.title;
@@ -117,7 +121,11 @@ function renderBar() {
     ? (comments.length + (comments.length === 1 ? ' draft comment' : ' draft comments'))
     : '';
   const ro = $('#pr-readonly-note');
-  if (ro) ro.hidden = !meta.readOnly;
+  if (ro) {
+    ro.hidden = !meta.readOnly;
+    ro.textContent = `No ${forge.label} token — click to connect`;
+    ro.title = `${forge.tokenHint[0].toUpperCase()}${forge.tokenHint.slice(1)} -- or click to connect`;
+  }
   const dw = $('#pr-diff-warning');
   if (dw) {
     dw.hidden = !meta.diffBaseWarning;
@@ -149,16 +157,23 @@ function renderBar() {
   if (cmtBtn) {
     cmtBtn.disabled = !!gate.all;
     cmtBtn.title = gate.all || (meta.readOnly
-      ? 'No GitHub token configured -- click to connect and submit'
+      ? `No ${forge.label} token configured -- click to connect and submit`
       : 'Submit review with drafts, without approval or change requests');
   }
   const composeEl = $('#pr-issue-compose');
   if (composeEl) composeEl.hidden = false;
 }
 
-export function nudgeGitHubToken() {
-  showToast('!', 'No GitHub token configured: set GITHUB_TOKEN, set GH_TOKEN, or run `gh auth login` -- or connect in Settings.', 5000);
-  openSettings('ui', 'GitHub', 'github.token');
+// The forge this workspace talks to (GitHub, GitLab, ...), as /api/meta
+// names it; GitHub when unknown, which is what px0 assumed before it knew more.
+export function forgeInfo() {
+  return S.meta?.forge?.info || { label: 'GitHub', tokenKey: 'github.token', tokenCategory: 'GitHub', tokenHint: 'set GITHUB_TOKEN, set GH_TOKEN, or run `gh auth login`' };
+}
+
+export function nudgeForgeToken() {
+  const f = forgeInfo();
+  showToast('!', `No ${f.label} token configured: ${f.tokenHint} -- or connect in Settings.`, 5000);
+  openSettings('ui', f.tokenCategory, f.tokenKey);
 }
 
 function wireBarButtons() {
@@ -167,12 +182,12 @@ function wireBarButtons() {
   $('#pr-submit-request-changes')?.addEventListener('click', () => submitReview('REQUEST_CHANGES'));
   $('#pr-submit-approve')?.addEventListener('click', () => submitReview('APPROVE'));
   $('#pr-issue-compose-send')?.addEventListener('click', sendNewIssueComment);
-  $('#pr-readonly-note')?.addEventListener('click', nudgeGitHubToken);
+  $('#pr-readonly-note')?.addEventListener('click', nudgeForgeToken);
 }
 
 async function sendNewIssueComment() {
   if (meta?.readOnly) {
-    nudgeGitHubToken();
+    nudgeForgeToken();
     return;
   }
   const ta = $('#pr-issue-compose-body');
@@ -268,7 +283,7 @@ async function pollPRBatch(id, count) {
 
 async function submitReview(event) {
   if (meta?.readOnly) {
-    nudgeGitHubToken();
+    nudgeForgeToken();
     return;
   }
   const bodyEl = $('#pr-review-body');
@@ -629,7 +644,7 @@ function wireCommentsPanel() {
 async function sendThreadReply(row) {
   if (!row) return;
   if (meta?.readOnly) {
-    nudgeGitHubToken();
+    nudgeForgeToken();
     return;
   }
   const ta = row.querySelector('.reply-input');

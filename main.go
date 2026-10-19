@@ -101,7 +101,7 @@ func main() {
 		return
 	}
 
-	// A full pull request URL (e.g. https://github.com/owner/repo/pull/123)
+	// A full pull or merge request URL (see prURLExamples)
 	// checks out the PR's full source tree instead of resolving a local file/directory.
 	// Only full URLs via "px0 <url>" are supported for PR review.
 	target := "."
@@ -224,7 +224,7 @@ func main() {
 		}
 		uiKV("PR", prTitle, 11, os.Stdout)
 		if pr.token == "" {
-			uiKV("access", uiDim(fmt.Sprintf("read-only (no %s token: set GITHUB_TOKEN or gh auth login to submit reviews)", pr.provider.Name()), os.Stdout), 11, os.Stdout)
+			uiKV("access", uiDim(fmt.Sprintf("read-only (no %s token: %s to submit reviews)", pr.provider.Info().Label, pr.provider.Info().TokenHint), os.Stdout), 11, os.Stdout)
 		}
 	}
 	uiKV("workspace", root, 11, os.Stdout)

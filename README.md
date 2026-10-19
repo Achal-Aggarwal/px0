@@ -65,8 +65,9 @@ px0 .
 px0 ~/workspace/project
 px0 main.go:42
 
-# Review a GitHub pull request
+# Review a GitHub pull request or a GitLab merge request (gitlab.com or self-hosted)
 px0 https://github.com/owner/repo/pull/123
+px0 https://gitlab.com/group/project/-/merge_requests/45
 
 # Remote or headless server mode
 px0 -host 0.0.0.0 -port 7777 ~/workspace

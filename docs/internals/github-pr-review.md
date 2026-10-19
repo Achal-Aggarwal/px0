@@ -23,7 +23,12 @@ type GitProvider interface {
     Name() string
     MatchURL(rawURL string) bool
     ParseURL(rawURL string) (PRTarget, error)
-    ResolveToken(cfg settings) (token, source string)
+    Info() ForgeInfo                                  // label and token setting, for the UI
+    MatchRemote(remoteURL string) bool                // which forge a plain workspace's remote is on
+    CloneURL(target PRTarget) string                  // https clone URL of the base repository
+    PRHeadRef(target PRTarget) string                 // refs/pull/N/head, refs/merge-requests/N/head, or ""
+    GitAuth(target PRTarget, token string) gitAuth    // the https auth header git sends
+    ResolveToken(cfg settings, target PRTarget) (token, source string)
     FetchPR(ctx context.Context, target PRTarget, token string) (PRMeta, error)
     CheckPushAccess(ctx context.Context, target PRTarget, token string) bool
     SubmitReview(ctx context.Context, target PRTarget, token, headSHA string, comments []prComment, event, body string) error
@@ -33,7 +38,21 @@ type GitProvider interface {
 }
 ```
 
-Merging is forge-neutral by construction: `PRMergeStatus.State` is one of the `MergeState*` constants (`clean`, `unstable`, `conflicts`, `behind`, `blocked`, `draft`, `unknown`, `closed`, `merged`), and methods are `MergeMethodMerge`/`Squash`/`Rebase`, named for what lands on the base branch. A provider maps its own vocabulary onto these: GitHub's `mergeable_state` (`githubMergeState`) and `allow_*_merge` repository flags, and in future GitLab's `detailed_merge_status` plus its squash option, Bitbucket's `merge_commit`/`squash`/`fast_forward`, or Gitea's `Do` field. `Merge` must wrap `ErrPRHeadMoved` when the PR head is no longer `req.HeadSHA`, and `ErrPRNotMergeable` when the forge refuses the merge. `handlePRMerge` maps both to a 409 with a message the dialog shows as is, without matching on forge-specific text.
+Merging is forge-neutral by construction: `PRMergeStatus.State` is one of the `MergeState*` constants (`clean`, `unstable`, `conflicts`, `behind`, `blocked`, `draft`, `unknown`, `closed`, `merged`), and methods are `MergeMethodMerge`/`Squash`/`Rebase`, named for what lands on the base branch. A provider maps its own vocabulary onto these: GitHub's `mergeable_state` (`githubMergeState`) and `allow_*_merge` repository flags, GitLab's `detailed_merge_status` plus its project merge method and `squash_option` (`gitlabMergeState`, `gitlabMergeMethods`), and in future Bitbucket's `merge_commit`/`squash`/`fast_forward`, or Gitea's `Do` field. `Merge` must wrap `ErrPRHeadMoved` when the PR head is no longer `req.HeadSHA`, and `ErrPRNotMergeable` when the forge refuses the merge. `handlePRMerge` maps both to a 409 with a message the dialog shows as is, without matching on forge-specific text.
+
+### Git Transport
+
+Nothing outside a provider names a forge host. `newForgeGit` turns the provider and target into a `forgeGit`: the clone URL, the PR head ref, and a `gitAuth`. A `gitAuth` is one https header scoped to the forge's URL prefix, for example `http.https://gitlab.example.com/.extraheader`. `gitAuthCmd` passes it to git through `GIT_CONFIG_*` environment variables, so the token never appears in argv, remote config, or URLs, and `gitAuth.redact` strips it from git's error text. Checkout, `Pull`, `Push`, `FetchBase`, and the workbench clone all go through it. A provider that returns no `PRHeadRef` gets the clone path, which clones the head branch itself.
+
+`PRTarget.Host` carries the forge host, which a self-hosted GitLab needs. `PRTarget.Owner` may be a nested group path (`group/sub`), so `remoteMatchesRepo` compares a remote's whole repository path rather than its last two segments. Only a local-path remote matches by suffix.
+
+### GitLab (`gitlab.go`)
+
+- **URLs**: any host with GitLab's `/-/merge_requests/<n>` path. The API root is `https://<host>/api/v4`, and the project is addressed by its URL-encoded full path.
+- **Tokens**: `gitlab.token` and `GITLAB_TOKEN` are scoped to `gitlabTokenHost()`, which is gitlab.com or `GITLAB_HOST`. Any other host only gets `glab config get token --host <host>`. Without this, an arbitrary merge request URL could collect a gitlab.com token. API calls send `Authorization: Bearer`, and git uses Basic auth with `oauth2:<token>`.
+- **Reviews**: `SubmitReview` posts each draft as a positioned discussion (`diff_refs` from the merge request), falling back to a note naming `path:line` when GitLab rejects the position. The body is posted as a note, `APPROVE` maps to `/approve` with the reviewed SHA, and `REQUEST_CHANGES` is a "Changes requested" note plus `/unapprove`. `FetchComments` turns positioned discussions into review threads, other discussions into flat top-level comments, and skips system notes. `ReplyToReviewComment` looks up the note's discussion and replies inside it.
+- **Merging**: `Merge` sends `squash`, the reviewed `sha`, and one message (title and body joined) as `squash_commit_message` or `merge_commit_message`. A 409 maps to `ErrPRHeadMoved`, and 405, 406, and 422 map to `ErrPRNotMergeable`. `MergeStatus.CanMerge` is the merge request's own `user.can_merge`.
+- **Push access**: Developer (30) or higher, on the project or through its group.
 
 ### Data Models
 - **`PRTarget`**: Normalized identifier containing `Provider`, `Owner`, `Repo`, `Number`, and original `URL`.
@@ -114,7 +133,7 @@ If no token is found:
 - Draft comments can be created locally and batch-applied with AI agents.
 - The CLI banner alerts the user:
   ```text
-  access: read-only (no github token: set GITHUB_TOKEN or gh auth login to submit reviews)
+  access: read-only (no GitHub token: set GITHUB_TOKEN, set GH_TOKEN, or run `gh auth login` to submit reviews)
   ```
 
 ---

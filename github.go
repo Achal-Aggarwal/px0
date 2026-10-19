@@ -43,6 +43,7 @@ func (g *GitHubProvider) ParseURL(rawURL string) (PRTarget, error) {
 	n, _ := strconv.Atoi(m[3])
 	return PRTarget{
 		Provider: "github",
+		Host:     "github.com",
 		Owner:    m[1],
 		Repo:     strings.TrimSuffix(m[2], ".git"),
 		Number:   n,
@@ -50,7 +51,30 @@ func (g *GitHubProvider) ParseURL(rawURL string) (PRTarget, error) {
 	}, nil
 }
 
-func (g *GitHubProvider) ResolveToken(cfg settings) (token, source string) {
+func (g *GitHubProvider) Info() ForgeInfo {
+	return ForgeInfo{
+		Name: "github", Label: "GitHub", TokenKey: "github.token", TokenCategory: "GitHub",
+		TokenHint: "set GITHUB_TOKEN, set GH_TOKEN, or run `gh auth login`",
+	}
+}
+
+func (g *GitHubProvider) MatchRemote(remoteURL string) bool {
+	return remoteHost(remoteURL) == "github.com"
+}
+
+func (g *GitHubProvider) CloneURL(target PRTarget) string {
+	return fmt.Sprintf("https://github.com/%s/%s.git", target.Owner, target.Repo)
+}
+
+func (g *GitHubProvider) PRHeadRef(target PRTarget) string {
+	return fmt.Sprintf("refs/pull/%d/head", target.Number)
+}
+
+func (g *GitHubProvider) GitAuth(target PRTarget, token string) gitAuth {
+	return basicGitAuth("github.com", "x-access-token", token)
+}
+
+func (g *GitHubProvider) ResolveToken(cfg settings, target PRTarget) (token, source string) {
 	return resolveGitHubToken(cfg)
 }
 

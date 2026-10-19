@@ -893,10 +893,33 @@ func (s *Server) handleStatic(sub fs.FS, prefix string) http.Handler {
 	})
 }
 
+// forgeMeta names the forge this workspace talks to and whether px0 has a
+// token for it: the PR's own forge in a review session, otherwise whichever
+// forge the branch's remote points at (nil for none px0 knows).
+func (s *Server) forgeMeta() map[string]any {
+	var provider GitProvider
+	var hasToken bool
+	if s.pr != nil {
+		provider = s.pr.provider
+		s.pr.mu.Lock()
+		hasToken = s.pr.token != ""
+		s.pr.mu.Unlock()
+	} else if root := s.ix.Root(); gitAvailable(root) {
+		remote := gitRemoteURL(root, gitCurrentBranch(root))
+		if provider = ForgeForRemote(remote); provider != nil {
+			tok, _ := provider.ResolveToken(readSettings(), PRTarget{Provider: provider.Name(), Host: remoteHost(remote)})
+			hasToken = tok != ""
+		}
+	}
+	if provider == nil {
+		return nil
+	}
+	return map[string]any{"info": provider.Info(), "hasToken": hasToken}
+}
+
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	n, at, ms := s.ix.Stats()
 	gitCount, gitFiles := s.ix.GitChanges()
-	githubToken, _ := resolveGitHubToken(readSettings())
 	meta := map[string]any{
 		"root":        s.ix.Root(),
 		"name":        filepath.Base(s.ix.Root()),
@@ -907,7 +930,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"git":         gitAvailable(s.ix.Root()),
 		"gitChanges":  gitCount,
 		"gitFiles":    gitFiles,
-		"githubToken": githubToken != "",
+		"forge":       s.forgeMeta(),
 		"lspServers":  s.lsp.Available(),
 		"metrics":     getProcessMetrics(s.lsp),
 		"version":     version,
