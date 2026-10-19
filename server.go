@@ -144,6 +144,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/git/commit-message"), s.handleGitCommitMessage)
 	s.mux.HandleFunc(s.routePath("/api/git/push"), s.handleGitPush)
 	s.mux.HandleFunc(s.routePath("/api/git/pull"), s.handleGitPull)
+	s.mux.HandleFunc(s.routePath("/api/git/sync-agent"), s.handleGitSyncAgent)
+	s.mux.HandleFunc(s.routePath("/api/git/sync-state"), s.handleGitSyncState)
+	s.mux.HandleFunc(s.routePath("/api/git/abort"), s.handleGitAbort)
 	s.mux.HandleFunc(s.routePath("/api/git/log"), s.handleGitLog)
 	s.mux.HandleFunc(s.routePath("/api/unpushed"), s.handleUnpushed)
 	s.mux.HandleFunc(s.routePath("/api/commitfiles"), s.handleCommitFiles)
@@ -1823,6 +1826,10 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 	}
 
 	root := s.ix.Root()
+	if op := gitOpInProgress(root); op != "" {
+		failSync(w, s.gitSyncState(root), "a "+op+" is already in progress")
+		return
+	}
 	if gitHasUncommittedChanges(root) {
 		fail(w, http.StatusConflict, "commit or discard your local changes before pulling")
 		return
@@ -1839,7 +1846,11 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := gitFFOnlyPull(root, remote, remoteBranch); err != nil {
 		if errors.Is(err, errNotFastForward) {
-			fail(w, http.StatusConflict, fmt.Sprintf("can't fast-forward; %s has diverged from %s/%s -- resolve manually, not supported here", branch, remote, remoteBranch))
+			// The fetch already landed, so the counts reflect the remote as
+			// it is now. The panel offers a rebase or merge from here.
+			st := s.gitSyncState(root)
+			st.Code = "diverged"
+			failSync(w, st, fmt.Sprintf("can't fast-forward: %s has diverged from %s", branch, st.Upstream))
 			return
 		}
 		fail(w, http.StatusBadGateway, err.Error())
@@ -1849,6 +1860,129 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 		s.gitWatcher.Trigger()
 	}
 	writeJSON(w, map[string]any{"ok": true, "message": "pulled the latest changes"})
+}
+
+// gitSyncState is where the current branch stands against its upstream:
+// what the git panel needs to offer (or follow up on) a rebase or merge.
+type gitSyncState struct {
+	Code       string `json:"code,omitempty"` // "diverged" or "in-progress" on a refused pull
+	Branch     string `json:"branch"`
+	Upstream   string `json:"upstream"` // e.g. "origin/main"; empty when none is configured
+	Ahead      int    `json:"ahead"`
+	Behind     int    `json:"behind"`
+	InProgress string `json:"inProgress,omitempty"` // "rebase" or "merge" left half-done
+	Dirty      bool   `json:"dirty"`
+}
+
+func (s *Server) gitSyncState(root string) gitSyncState {
+	st := gitSyncState{Branch: gitCurrentBranch(root), InProgress: gitOpInProgress(root)}
+	if st.InProgress != "" {
+		st.Code = "in-progress"
+	}
+	if st.InProgress == "rebase" {
+		if b := gitRebasingBranch(root); b != "" {
+			st.Branch = b
+		}
+	}
+	if st.Branch != "" && st.Branch != "HEAD" {
+		if remote, rb, ok := gitUpstream(root, st.Branch); ok {
+			st.Upstream = remote + "/" + rb
+		}
+	}
+	st.Ahead, st.Behind, _ = gitAheadBehind(root)
+	st.Dirty = gitHasUncommittedChanges(root)
+	return st
+}
+
+// failSync is a 409 that carries the sync state alongside the message, so
+// the panel can render the next step instead of just the refusal.
+func failSync(w http.ResponseWriter, st gitSyncState, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	json.NewEncoder(w).Encode(struct {
+		Error string `json:"error"`
+		gitSyncState
+	}{msg, st})
+}
+
+// handleGitSyncState reports the branch's standing against its upstream,
+// read after an agent rebase/merge finishes to tell done from half-done.
+func (s *Server) handleGitSyncState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		fail(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.pr != nil || !gitAvailable(s.ix.Root()) {
+		writeJSON(w, gitSyncState{})
+		return
+	}
+	writeJSON(w, s.gitSyncState(s.ix.Root()))
+}
+
+// handleGitSyncAgent dispatches the selected harness to rebase (or merge)
+// the current branch onto its upstream after a pull refused to
+// fast-forward. Only ever on an explicit click: px0 itself still never
+// rewrites history, and the harness is told never to push. When a rebase or
+// merge is already half-done (the last attempt stopped on a conflict), the
+// harness is asked to finish that one instead of starting over.
+func (s *Server) handleGitSyncAgent(w http.ResponseWriter, r *http.Request) {
+	if !localPost(w, r) {
+		return
+	}
+	if !s.agentOrFail(w) {
+		return
+	}
+	if s.pr != nil {
+		fail(w, http.StatusBadRequest, "rebasing is not supported in a PR review session")
+		return
+	}
+	var body struct {
+		Strategy string `json:"strategy"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&body)
+	if body.Strategy != "rebase" && body.Strategy != "merge" {
+		fail(w, http.StatusBadRequest, "strategy must be rebase or merge")
+		return
+	}
+	root := s.ix.Root()
+	st := s.gitSyncState(root)
+	if st.InProgress == "" && st.Dirty {
+		fail(w, http.StatusConflict, "commit or discard your local changes before a "+body.Strategy)
+		return
+	}
+	if st.InProgress != "" && st.InProgress != body.Strategy {
+		fail(w, http.StatusConflict, "a "+st.InProgress+" is already in progress; abort it first")
+		return
+	}
+	if st.Upstream == "" {
+		fail(w, http.StatusBadRequest, "no upstream branch configured for "+st.Branch)
+		return
+	}
+	job, err := s.agent.StartPrompt(body.Strategy+" onto "+st.Upstream, gitSyncPrompt(body.Strategy, st))
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, errAgentNone) {
+			code = http.StatusBadRequest
+		}
+		fail(w, code, err.Error())
+		return
+	}
+	writeJSON(w, job)
+}
+
+// handleGitAbort aborts a rebase or merge left in progress.
+func (s *Server) handleGitAbort(w http.ResponseWriter, r *http.Request) {
+	if !localPost(w, r) {
+		return
+	}
+	if err := gitAbortOp(s.ix.Root()); err != nil {
+		fail(w, http.StatusConflict, err.Error())
+		return
+	}
+	if s.gitWatcher != nil {
+		s.gitWatcher.Trigger()
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 // handleGitLog returns recent commits from HEAD (default 5).

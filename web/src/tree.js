@@ -623,7 +623,7 @@ export function initTree() {
       } catch (err) {
         tick.classList.toggle('staged', !staged);
         tick.title = staged ? 'Stage' : 'Unstage';
-        showToast('!', err.message || 'Could not update staging');
+        emit('git:error', { title: staged ? 'Could not stage' : 'Could not unstage', message: err.message || '' });
       }
       return;
     }

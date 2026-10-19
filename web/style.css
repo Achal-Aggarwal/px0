@@ -517,6 +517,55 @@ a.cc-who:hover { color: var(--accent-fg); }
 .git-token-nudge[hidden] { display: none; }
 .git-token-nudge svg { flex: none; }
 
+/* The panel's one place for git outcomes: a failed action, a pull that can't
+   fast-forward (with the rebase/merge offer), an agent rebase running, and
+   what it left behind. Git errors land here, never in a global toast. */
+.git-notice {
+  --tone: var(--err);
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 7px 8px; border: 1px solid var(--tone); border-left-width: 3px;
+  border-radius: var(--r); background: var(--bg3); font: 11.5px/1.45 var(--ui);
+}
+.git-notice[hidden] { display: none; }
+.git-notice[data-tone="warn"] { --tone: var(--warn, #e5a50a); }
+.git-notice[data-tone="busy"] { --tone: var(--accent); }
+.git-notice[data-tone="ok"] { --tone: var(--s, var(--accent)); }
+.git-notice-head { display: flex; align-items: center; gap: 6px; }
+.git-notice-title { flex: 1; min-width: 0; font-weight: 600; color: var(--tone); overflow-wrap: anywhere; }
+.git-notice[data-tone="busy"] .git-notice-title::before {
+  content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 6px;
+  border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  vertical-align: -1px; animation: git-notice-spin .8s linear infinite;
+}
+@keyframes git-notice-spin { to { transform: rotate(360deg); } }
+.git-notice-close {
+  flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: var(--r);
+  background: none; color: var(--faint); font: 14px/1 var(--ui); cursor: pointer;
+}
+.git-notice-close:hover { color: var(--fg); background: var(--bg4); }
+.git-notice-close[hidden] { display: none; }
+.git-notice-text { color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9em; overflow-y: auto; }
+.git-notice-text:empty { display: none; }
+.git-notice-text code { font: 11px var(--mono); color: var(--fg); }
+.git-notice-text .hint { display: block; margin-top: 3px; color: var(--faint); font-size: 10.5px; }
+.git-notice-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.git-notice-actions:empty { display: none; }
+.git-notice-actions button {
+  flex: 1 1 auto; height: 24px; padding: 0 8px; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--bg); color: var(--fg); font: 11px var(--ui); cursor: pointer;
+}
+.git-notice-actions button:hover:not(:disabled) { border-color: var(--accent); background: var(--bg4); }
+.git-notice-actions button.primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.git-notice-actions button.primary:hover:not(:disabled) { background: var(--accent); opacity: .9; }
+.git-notice-actions button:disabled { opacity: .5; cursor: default; }
+.git-notice-log summary { font: 10.5px var(--ui); color: var(--faint); cursor: pointer; user-select: none; }
+.git-notice-log[hidden] { display: none; }
+.git-notice-log pre {
+  margin: 4px 0 0; padding: 6px; max-height: 160px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r);
+  font: 10.5px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
 .git-clean-state {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   padding: 8px 10px; font: 12px var(--ui); color: var(--faint);

@@ -55,6 +55,19 @@
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           <span>No GitHub token configured &mdash; add one</span>
         </button>
+        <div id="git-notice" class="git-notice" role="status" aria-live="polite" hidden>
+          <div class="git-notice-head">
+            <span id="git-notice-title" class="git-notice-title"></span>
+            <button id="git-notice-close" class="git-notice-close" type="button" title="Dismiss">&times;</button>
+          </div>
+          <div id="git-notice-text" class="git-notice-text"></div>
+          <div id="git-notice-agent" class="git-agent-picker" hidden>
+            <select id="git-sync-harness" class="agent-harness-select" title="Coding harness"></select>
+            <select id="git-sync-model" class="agent-model-select" title="Model"></select>
+          </div>
+          <div id="git-notice-actions" class="git-notice-actions"></div>
+          <details id="git-notice-log" class="git-notice-log" hidden><summary>Agent output</summary><pre></pre></details>
+        </div>
         <div id="git-commit-section" class="git-commit-section">
           <div class="git-agent-picker">
             <select id="git-harness" class="agent-harness-select" title="Coding harness"></select>
@@ -81,7 +94,7 @@
           <span>Working tree clean</span>
         </div>
         <div class="git-panel-actions git-sync-actions">
-          <button id="git-pull" class="footer-btn" title="Pull (fast-forward only; refuses on conflict)">Pull</button>
+          <button id="git-pull" class="footer-btn" title="Pull (fast-forward only; if the branches diverged, offers a rebase or merge by your coding harness)">Pull</button>
           <button id="git-push" class="footer-btn" title="No unpushed commits to push" disabled>Push</button>
         </div>
         <div id="git-recent-commits" class="git-recent-commits">

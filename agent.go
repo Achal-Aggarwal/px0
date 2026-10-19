@@ -931,6 +931,41 @@ func commitMessagePrompt(files []string, stat, diff, instruction string) string 
 	return b.String()
 }
 
+// gitSyncPrompt asks the harness to rebase (or merge) the current branch
+// onto its upstream after a fast-forward-only pull was refused, or to finish
+// one a previous attempt left half-done. It may run git and edit conflicted
+// files, but must never push: what reaches the remote stays the user's call.
+func gitSyncPrompt(strategy string, st gitSyncState) string {
+	remote, _, _ := strings.Cut(st.Upstream, "/")
+	var b strings.Builder
+	if st.InProgress != "" {
+		fmt.Fprintf(&b, "A git %s of branch %s onto %s is in progress and stopped, most likely on conflicts. Finish it.\n\n", strategy, st.Branch, st.Upstream)
+	} else {
+		fmt.Fprintf(&b, "git pull is failing on branch %s: it can't fast-forward onto %s (%d local commit(s) not upstream, %d incoming). Run %s.\n\n", st.Branch, st.Upstream, st.Ahead, st.Behind, strategy)
+	}
+	b.WriteString("Steps:\n")
+	if strategy == "rebase" {
+		if st.InProgress == "" {
+			fmt.Fprintf(&b, "1. git fetch %s, then git rebase %s.\n", remote, st.Upstream)
+		} else {
+			b.WriteString("1. Run git status to see where the rebase stopped.\n")
+		}
+		b.WriteString("2. For each conflict, read both sides and resolve it so the intent of both the local and the incoming change survives. Remove every conflict marker, git add the files, and run GIT_EDITOR=true git rebase --continue. Repeat until the rebase completes.\n")
+		b.WriteString("3. Never use git rebase --skip: it silently drops a local commit.\n")
+	} else {
+		if st.InProgress == "" {
+			fmt.Fprintf(&b, "1. git fetch %s, then git merge --no-edit %s.\n", remote, st.Upstream)
+		} else {
+			b.WriteString("1. Run git status to see which files are still conflicted.\n")
+		}
+		b.WriteString("2. For each conflict, read both sides and resolve it so the intent of both the local and the incoming change survives. Remove every conflict marker, git add the files, and run git commit --no-edit to conclude the merge.\n")
+	}
+	fmt.Fprintf(&b, "\nRules: do not push or force-push. Do not reset, amend, or rewrite commits beyond what the %s itself does. Do not touch files that are not part of a conflict.\n", strategy)
+	fmt.Fprintf(&b, "If a conflict cannot be resolved with confidence, run git %s --abort so the branch is back where it started, and say which files and why.\n", strategy)
+	b.WriteString("Finish with a short summary: the conflicts you resolved (file and how), or that there were none.\n")
+	return b.String()
+}
+
 // ---------------------------------------------------------------- HTTP
 
 func (s *Server) agentOrFail(w http.ResponseWriter) bool {
