@@ -588,6 +588,17 @@ func (s *Server) SetPR(p *prSession) {
 		if s.gitWatcher != nil {
 			s.gitWatcher.Trigger()
 		}
+		if p.target.Owner != "" && p.target.Repo != "" && p.target.Number > 0 {
+			// Drafts are keyed on the PR, not the base path. Carry over any
+			// drafts an older px0 saved under the base-path file.
+			prs := newPRSessionManager(p.target)
+			if old := s.session; old != nil && len(prs.Get().Drafts) == 0 && len(old.Get().Drafts) > 0 {
+				drafts := old.Get().Drafts
+				prs.Update(func(ws *WorkspaceSession) { ws.Drafts = drafts })
+				old.Update(func(ws *WorkspaceSession) { ws.Drafts = nil })
+			}
+			s.session = prs
+		}
 		if s.session != nil {
 			p.mu.Lock()
 			if len(p.comments) == 0 && len(s.session.Get().Drafts) > 0 {

@@ -73,7 +73,7 @@ When hovering over code lines or diff lines:
 ### 4. Batch Applying Comments Locally (`⚡ Batch Apply`)
 Drafted review comments appear in the PR top bar and inline across files:
 - **⚡ Batch Apply**: Lets you apply all drafted review comments across the entire pull request in one go using your configured coding agent harness. The agent reads your comments as instructions and modifies the code directly in the PR worktree.
-- Comments remain drafts until either batch-applied or formally submitted. Drafts are saved outside the repository, so a PR reopened from the [workbench](workbench.md) keeps them. A PR opened directly with `px0 <pr-url>` starts with no drafts each run, unless a base path is set.
+- Comments remain drafts until either batch-applied or formally submitted. Drafts are saved outside the repository, per pull request, so reopening the same PR, with `px0 <pr-url>` or from the [workbench](workbench.md), brings them back.
 
 ### 5. Submitting Formal Reviews
 The PR review bar above the editor tabs hosts the overall review summary and verdict actions:

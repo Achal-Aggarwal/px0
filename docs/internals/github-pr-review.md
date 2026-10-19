@@ -131,9 +131,9 @@ func gitMergeBase(root, a, b string) string
 ## 6. Draft Comments, Submission & Batch Apply
 
 ### Drafts and the Session File
-Drafts are held in `prSession.comments` and mirrored to the workspace session file by `sessionManager` ([`session.go`](../../session.go)). Adding or deleting a draft writes `WorkspaceSession.Drafts`; a successful submit clears it. When `SetPR` attaches a checkout and `prSession.comments` is empty, it loads the saved drafts and advances `nextID` past them.
+Drafts are held in `prSession.comments` and mirrored to the workspace session file by `sessionManager` ([`session.go`](../../session.go)). Adding or deleting a draft writes `WorkspaceSession.Drafts`; a successful submit clears it. `SetPR` switches the server to the PR's own session file (`newPRSessionManager`), and when `prSession.comments` is empty it loads the saved drafts and advances `nextID` past them.
 
-The file lives at `$XDG_STATE_HOME/px0/sessions/<key>.json`, falling back to `~/.px0/sessions/` or `os.TempDir()/px0-sessions/`. The key is the `-base-path` with slashes replaced by `_`, or, when there is no base path, the first 8 bytes of the SHA-256 of the workspace root as hex. A PR opened directly with `px0 <pr-url>` and no base path checks out into a new temporary directory each time, so its key changes and drafts do not carry over between runs. A PR opened from the [workbench](workbench.md) runs under a stable `/w/<id>/` base path, so its drafts do.
+The file lives at `$XDG_STATE_HOME/px0/sessions/pr-<id>.json`, falling back to `~/.px0/sessions/` or `os.TempDir()/px0-sessions/`. `<id>` is the PR's workbench item ID (`wbPRItem`, from the lowercased `provider/owner/repo#n`), not the base path or checkout root: every opening checks the PR out into a new temporary directory, so a root-keyed file would never be found again. Drafts therefore carry over between runs whether the PR is opened with `px0 <pr-url>` or from the [workbench](workbench.md). If the PR's file has no drafts and the base-path file (`sessionFilePath`, where older versions kept them) does, `SetPR` moves them across.
 
 The file also has `tabs`, `active` and `openDirs` fields, and `/api/session` still reads and writes them, but the browser no longer uses them: open tabs and expanded folders are not restored on reload.
 
