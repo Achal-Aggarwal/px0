@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -105,13 +108,6 @@ func (s *Server) BasePath() string {
 		return "/"
 	}
 	return s.basePath
-}
-
-func (s *Server) SetBasePath(bp string) {
-	s.basePath = cleanBasePath(bp)
-	s.session = newSessionManager(s.basePath, s.ix.Root())
-	s.mux = http.NewServeMux()
-	s.registerRoutes()
 }
 
 func (s *Server) routePath(subpath string) string {
@@ -655,14 +651,6 @@ func (s *Server) SetPR(p *prSession) {
 	}
 }
 
-// agentHarnesses is the picker's list, empty when editing is unavailable.
-func (s *Server) agentHarnesses() []agentHarness {
-	if s.agent == nil {
-		return []agentHarness{}
-	}
-	return s.agent.Detect()
-}
-
 var baseHrefRe = regexp.MustCompile(`<base\s+href="[^"]*">`)
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -960,26 +948,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"agents":      []agentHarness{},
 	}
 	if s.pr != nil {
-		p := s.pr
-		p.mu.Lock()
-		meta["pr"] = map[string]any{
-			"number":          p.meta.Number,
-			"title":           p.meta.Title,
-			"author":          p.meta.Author,
-			"base":            p.meta.BaseRef,
-			"head":            p.meta.HeadRef,
-			"state":           p.meta.State,
-			"merged":          p.meta.Merged,
-			"mergedAt":        p.meta.MergedAt,
-			"writeAccess":     p.writeAccess,
-			"readOnly":        p.token == "",
-			"draftCount":      len(p.comments),
-			"diffBaseWarning": p.diffBaseWarning,
-			"headSHA":         p.meta.HeadSHA,
-			"url":             p.target.URL,
-			"files":           s.ix.PRFiles(),
-		}
-		p.mu.Unlock()
+		meta["pr"] = s.pr.metaMap(s.ix.PRFiles())
 	}
 	writeJSON(w, meta)
 }
@@ -2586,5 +2555,423 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) CloseThreads() {
 	if s.threads != nil {
 		s.threads.Close()
+	}
+}
+
+// ---------------------------------------------------------------- LSP setup & control HTTP handlers
+
+// localPost admits a request that changes the machine only when it is a POST
+// from px0's own page. Browsers send Origin on every POST, so a page from another
+// site cannot pass. Requiring the Host to be an IP address or localhost also
+// shuts out DNS rebinding, where an attacker's domain is pointed at this machine
+// and its Origin would otherwise match.
+func localPost(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		fail(w, http.StatusMethodNotAllowed, "POST only")
+		return false
+	}
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host != "localhost" && net.ParseIP(host) == nil {
+		fail(w, http.StatusForbidden, "open px0 by IP address or localhost to set up language servers")
+		return false
+	}
+	if o, err := url.Parse(r.Header.Get("Origin")); err != nil || o.Host != r.Host {
+		fail(w, http.StatusForbidden, "request did not come from px0")
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleLSPSetup(w http.ResponseWriter, r *http.Request) {
+	if s.lsp == nil {
+		fail(w, 503, "language servers are disabled")
+		return
+	}
+	_, rel, ok := s.resolvePath(r.URL.Query().Get("path"))
+	if !ok {
+		fail(w, 400, "bad path")
+		return
+	}
+	writeJSON(w, s.lsp.Setup(rel))
+}
+
+func (s *Server) handleLSPInstall(w http.ResponseWriter, r *http.Request) {
+	if s.lsp == nil {
+		fail(w, 503, "language servers are disabled")
+		return
+	}
+	if !localPost(w, r) {
+		return
+	}
+	q := r.URL.Query()
+	option, _ := strconv.Atoi(q.Get("option"))
+	j, err := s.lsp.Install(q.Get("server"), option)
+	if err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, j)
+}
+
+func (s *Server) relevantLSPServers() []map[string]any {
+	if s.lsp == nil || !s.lsp.Enabled() {
+		return []map[string]any{}
+	}
+
+	extMap := map[string]bool{}
+	if s.ix != nil {
+		for _, f := range s.ix.Files() {
+			ext := strings.ToLower(filepath.Ext(f.Path))
+			if ext != "" {
+				extMap[ext] = true
+			}
+		}
+	}
+
+	seen := map[string]bool{}
+	var result []map[string]any
+
+	// 1. Add servers matching extensions present in the workspace
+	for i := range lspRegistry {
+		def := &lspRegistry[i]
+		matchesExt := false
+		for _, ext := range def.Exts {
+			if extMap[ext] {
+				matchesExt = true
+				break
+			}
+		}
+		if matchesExt && !seen[def.Name] {
+			seen[def.Name] = true
+			result = append(result, s.lsp.ServerStatus(def))
+		}
+	}
+
+	// 2. Also include any server that is currently running or starting.
+	// Snapshot the names under RLock first: ServerStatus takes m.mu.RLock
+	// itself, and Go's RWMutex is not reentrant, so holding the lock across
+	// the call would deadlock.
+	s.lsp.mu.RLock()
+	var extra []string
+	for name := range s.lsp.clients {
+		if !seen[name] {
+			extra = append(extra, name)
+		}
+	}
+	for name := range s.lsp.starting {
+		if !seen[name] {
+			extra = append(extra, name)
+		}
+	}
+	s.lsp.mu.RUnlock()
+	for _, name := range extra {
+		for i := range lspRegistry {
+			if lspRegistry[i].Name == name {
+				seen[name] = true
+				result = append(result, s.lsp.ServerStatus(&lspRegistry[i]))
+				break
+			}
+		}
+	}
+
+	return result
+}
+
+// handleLSPServers returns the list of all language servers relevant to the workspace
+// along with their runtime states.
+func (s *Server) handleLSPServers(w http.ResponseWriter, r *http.Request) {
+	if s.lsp == nil {
+		writeJSON(w, map[string]any{
+			"enabled":    false,
+			"anyRunning": false,
+			"servers":    []any{},
+		})
+		return
+	}
+	servers := s.relevantLSPServers()
+	anyRunning := false
+	for _, srv := range servers {
+		if r, ok := srv["running"].(bool); ok && r {
+			anyRunning = true
+			break
+		}
+	}
+	if !anyRunning && s.lsp.AnyRunning() {
+		anyRunning = true
+	}
+	writeJSON(w, map[string]any{
+		"enabled":    s.lsp.Enabled(),
+		"anyRunning": anyRunning,
+		"servers":    servers,
+	})
+}
+
+// handleLSPStop stops a running language server or all servers.
+func (s *Server) handleLSPStop(w http.ResponseWriter, r *http.Request) {
+	if s.lsp == nil {
+		fail(w, 503, "language servers are disabled")
+		return
+	}
+	if !localPost(w, r) {
+		return
+	}
+	server := r.URL.Query().Get("server")
+	if server == "" {
+		var body struct {
+			Server string `json:"server"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) == nil && body.Server != "" {
+			server = body.Server
+		}
+	}
+	s.lsp.Stop(server)
+	s.handleLSPServers(w, r)
+}
+
+// handleLSPStart finds servers installed since startup, clears earlier start
+// failures and starts the server for path or server name, reporting status.
+func (s *Server) handleLSPStart(w http.ResponseWriter, r *http.Request) {
+	if s.lsp == nil {
+		fail(w, 503, "language servers are disabled")
+		return
+	}
+	if !localPost(w, r) {
+		return
+	}
+	server := r.URL.Query().Get("server")
+	if server == "" {
+		var body struct {
+			Server string `json:"server"`
+			All    bool   `json:"all"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) == nil {
+			if body.All {
+				server = "all"
+			} else {
+				server = body.Server
+			}
+		}
+	}
+
+	if server != "" {
+		if server == "all" {
+			servers := s.relevantLSPServers()
+			for _, srv := range servers {
+				if inst, _ := srv["installed"].(bool); inst {
+					if name, _ := srv["name"].(string); name != "" {
+						_ = s.lsp.StartServer(name)
+					}
+				}
+			}
+		} else {
+			if err := s.lsp.StartServer(server); err != nil {
+				fail(w, 400, err.Error())
+				return
+			}
+		}
+		s.handleLSPServers(w, r)
+		return
+	}
+
+	_, rel, ok := s.resolvePath(r.URL.Query().Get("path"))
+	if !ok {
+		fail(w, 400, "bad path or server required")
+		return
+	}
+	s.lsp.Rescan()
+	ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+	defer cancel()
+	s.lsp.client(ctx, rel) // the spawn continues if this gives up waiting
+	writeJSON(w, s.lspBrief(rel))
+}
+
+// lspBrief is the language server summary sent with a file: its state, and the
+// language that lacks a server when none is installed, so the UI can offer one.
+func (s *Server) lspBrief(rel string) map[string]any {
+	state, srv := s.lsp.State(rel)
+	b := map[string]any{
+		"state":      string(state),
+		"server":     srv,
+		"anyRunning": s.lsp.AnyRunning(),
+	}
+	if lang := s.lsp.MissingLang(rel); lang != "" {
+		b["missing"] = lang
+	}
+	return b
+}
+
+// ---------------------------------------------------------------- Workspace Session
+
+// SessionTab represents an open editor tab pointing to a file path. Ref, when
+// set, is the commit SHA the tab is pinned to -- a tab opened from the
+// Unpushed sidebar section, showing that commit's own diff rather than the
+// working tree's. A commit that no longer exists simply restores as an
+// ordinary tab.
+type SessionTab struct {
+	Path string `json:"path"`
+	Ref  string `json:"ref,omitempty"`
+}
+
+// WorkspaceSession stores the persistent UI state for a workspace:
+// the list of open tabs, the currently active tab index, expanded directory tree paths,
+// and any unsaved PR review comment drafts.
+type WorkspaceSession struct {
+	Tabs     []SessionTab `json:"tabs"`
+	Active   int          `json:"active"`
+	OpenDirs []string     `json:"openDirs"`
+	Drafts   []prComment  `json:"drafts,omitempty"`
+}
+
+// sessionDir returns the directory holding session files: XDG_STATE_HOME/px0/sessions
+// if available, falling back to ~/.px0/sessions or os.TempDir()/px0-sessions.
+func sessionDir() string {
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "px0", "sessions")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".px0", "sessions")
+	}
+	return filepath.Join(os.TempDir(), "px0-sessions")
+}
+
+// sessionFilePath returns the path to the JSON file where workspace session state is saved.
+// The file name is derived from the base path or an 8-byte SHA-256 hash of the cleaned
+// workspace root path.
+func sessionFilePath(basePath, root string) string {
+	key := ""
+	if basePath != "" && basePath != "/" {
+		clean := strings.Trim(basePath, "/")
+		clean = strings.ReplaceAll(clean, "/", "_")
+		key = clean
+	} else {
+		h := sha256.Sum256([]byte(filepath.Clean(root)))
+		key = hex.EncodeToString(h[:8])
+	}
+	return filepath.Join(sessionDir(), key+".json")
+}
+
+// prSessionFilePath returns the session file for a pull request, keyed on the PR
+// itself (the workbench item ID) rather than the base path or checkout root. Every
+// opening checks the PR out into a new temporary directory, so a root-keyed file
+// would never be found again.
+func prSessionFilePath(pt PRTarget) string {
+	return filepath.Join(sessionDir(), "pr-"+wbPRItem(pt).ID+".json")
+}
+
+// newPRSessionManager opens the session file for a pull request.
+func newPRSessionManager(pt PRTarget) *sessionManager {
+	sm := &sessionManager{
+		path: prSessionFilePath(pt),
+		data: WorkspaceSession{Tabs: []SessionTab{}, OpenDirs: []string{}},
+	}
+	sm.load()
+	return sm
+}
+
+// sessionManager coordinates concurrent thread-safe access and persistence
+// for workspace session data on disk.
+type sessionManager struct {
+	mu   sync.Mutex
+	path string
+	data WorkspaceSession
+}
+
+// newSessionManager initializes a session manager for the given workspace,
+// loading any existing session JSON file from disk.
+func newSessionManager(basePath, root string) *sessionManager {
+	p := sessionFilePath(basePath, root)
+	sm := &sessionManager{
+		path: p,
+		data: WorkspaceSession{
+			Tabs:     []SessionTab{},
+			OpenDirs: []string{},
+		},
+	}
+	sm.load()
+	return sm
+}
+
+// load reads the session state from disk into memory, initializing empty slices if nil.
+func (sm *sessionManager) load() {
+	if sm.path == "" {
+		return
+	}
+	data, err := os.ReadFile(sm.path)
+	if err != nil {
+		return
+	}
+	var s WorkspaceSession
+	if err := json.Unmarshal(data, &s); err == nil {
+		if s.Tabs == nil {
+			s.Tabs = []SessionTab{}
+		}
+		if s.OpenDirs == nil {
+			s.OpenDirs = []string{}
+		}
+		sm.data = s
+	}
+}
+
+// Get returns a snapshot of the current workspace session.
+func (sm *sessionManager) Get() WorkspaceSession {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.data
+}
+
+// Update executes a mutation function on the session state under mutex protection
+// and persists the resulting state formatted as JSON to disk.
+func (sm *sessionManager) Update(fn func(*WorkspaceSession)) WorkspaceSession {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	fn(&sm.data)
+	if sm.path != "" {
+		if err := os.MkdirAll(filepath.Dir(sm.path), 0o755); err == nil {
+			if b, err := json.MarshalIndent(sm.data, "", "  "); err == nil {
+				_ = os.WriteFile(sm.path, append(b, '\n'), 0o644)
+			}
+		}
+	}
+	return sm.data
+}
+
+// handleSession handles GET and POST requests for /api/session.
+// GET returns the current workspace session state.
+// POST updates tab list, active tab, and open directories, saving changes to disk.
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.session.Get())
+	case http.MethodPost:
+		if !localPost(w, r) {
+			return
+		}
+		var payload struct {
+			Tabs     *[]SessionTab `json:"tabs"`
+			Active   *int          `json:"active"`
+			OpenDirs *[]string     `json:"openDirs"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&payload); err != nil {
+			fail(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		updated := s.session.Update(func(ws *WorkspaceSession) {
+			if payload.Tabs != nil {
+				ws.Tabs = *payload.Tabs
+			}
+			if payload.Active != nil {
+				ws.Active = *payload.Active
+			}
+			if payload.OpenDirs != nil {
+				ws.OpenDirs = *payload.OpenDirs
+			}
+		})
+		writeJSON(w, updated)
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }

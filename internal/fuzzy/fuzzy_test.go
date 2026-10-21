@@ -1,6 +1,7 @@
 package fuzzy
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -170,8 +171,63 @@ func BenchmarkScore(b *testing.B) {
 	item := NewItem("internal/server/http_server.go")
 	scratch := make([]int, 0, 64)
 	b.ResetTimer()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, _, _ = Score("httpserver", "httpserver", item.Path, item.Lower, item.NameStart, scratch)
+	}
+}
+
+func generateBenchItems(n int) []Item {
+	dirs := []string{"src", "pkg", "internal", "cmd", "pkg/util", "web/src/components", "api/v1", "services"}
+	names := []string{"server.go", "client.go", "handler.go", "types.go", "utils.go", "index.ts", "app.py", "main.rs"}
+	entries := make([]Item, n)
+	for i := 0; i < n; i++ {
+		d := dirs[i%len(dirs)]
+		name := fmt.Sprintf("%d_%s", i, names[i%len(names)])
+		p := fmt.Sprintf("%s/%s", d, name)
+		entries[i] = Item{
+			Path:      p,
+			Name:      name,
+			Lower:     strings.ToLower(p),
+			NameStart: len(p) - len(name),
+		}
+	}
+	return entries
+}
+
+func BenchmarkFuzzyFind_1K(b *testing.B) {
+	files := generateBenchItems(1000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Find(files, "handler", 50)
+	}
+}
+
+func BenchmarkFuzzyFind_10K(b *testing.B) {
+	files := generateBenchItems(10000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Find(files, "handler", 50)
+	}
+}
+
+func BenchmarkFuzzyFind_50K(b *testing.B) {
+	files := generateBenchItems(50000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Find(files, "srvutil", 50)
+	}
+}
+
+func BenchmarkFuzzyFindShortQuery_50K(b *testing.B) {
+	files := generateBenchItems(50000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Find(files, "in", 50)
 	}
 }
 

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -12,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // gitDisabled turns off all git awareness (the -no-git flag). Like uiQuiet, a
@@ -178,26 +182,7 @@ func gitStatusAndStagedAgainst(root, base, head string) (status map[string]strin
 		}
 		if ref != "" && ref != "HEAD" {
 			if diffOut, err := exec.Command("git", "-C", root, "diff", "--name-status", "-z", ref).Output(); err == nil {
-				parts := strings.Split(string(diffOut), "\x00")
-				for i := 0; i < len(parts); i++ {
-					stStr := parts[i]
-					if stStr == "" {
-						continue
-					}
-					code := stStr[0]
-					if code == 'R' || code == 'C' {
-						i += 2
-					} else {
-						i++
-					}
-					if i < len(parts) {
-						if k, ok := key(parts[i]); ok {
-							if _, exists := m[k]; !exists {
-								m[k] = string(code)
-							}
-						}
-					}
-				}
+				parseNameStatusZ(diffOut, key, m, false)
 			}
 		}
 		if len(m) == 0 {
@@ -255,30 +240,43 @@ func mapXY(xy string) string {
 	}
 }
 
+// parseNameStatusZ parses `git diff --name-status -z` output into dst.
+func parseNameStatusZ(out []byte, key func(string) (string, bool), dst map[string]string, overwrite bool) {
+	parts := strings.Split(string(out), "\x00")
+	for i := 0; i < len(parts); i++ {
+		st := parts[i]
+		if st == "" {
+			continue
+		}
+		code := st[:1]
+		if code == "R" || code == "C" {
+			i += 2 // R<score> \0 <src> \0 <dst>
+		} else {
+			i++
+		}
+		if i < len(parts) {
+			if k, ok := key(parts[i]); ok {
+				if overwrite {
+					dst[k] = code
+				} else if _, exists := dst[k]; !exists {
+					dst[k] = code
+				}
+			}
+		}
+	}
+}
+
 // gitStagedPaths maps repo-relative-to-served-root path -> true for every
 // file with staged (index) changes. Used to drive the stage tick in the file
 // tree and to gate gitCommit. Fails quiet: nil on any error or no repo.
 func gitStagedPaths(root string) map[string]bool {
-	info := gitProbe(root)
-	if !info.ok {
+	files := gitStagedFiles(root)
+	if len(files) == 0 {
 		return nil
 	}
-	out, err := exec.Command("git", "-C", root, "diff", "--name-only", "--cached", "-z").Output()
-	if err != nil {
-		return nil
-	}
-	key := repoRelKey(info, root)
-	staged := map[string]bool{}
-	for _, p := range strings.Split(string(out), "\x00") {
-		if p == "" {
-			continue
-		}
-		if k, ok := key(p); ok {
-			staged[k] = true
-		}
-	}
-	if len(staged) == 0 {
-		return nil
+	staged := make(map[string]bool, len(files))
+	for _, k := range files {
+		staged[k] = true
 	}
 	return staged
 }
@@ -779,12 +777,6 @@ func gitAheadBehind(root string) (ahead, behind int, hasUpstream bool) {
 	return 0, 0, false
 }
 
-// gitDiff returns the unified diff of relpath against HEAD. relpath is relative
-// to the served root; git resolves it against -C root. Fails quiet -> "".
-func gitDiff(root, relpath string) string {
-	return gitDiffAgainst(root, relpath, "HEAD")
-}
-
 // gitDiffFull returns the whole unified diff for `git diff <refs...>`, capped at
 // max bytes (with a marker line when cut). Untracked files are not part of a git
 // diff; callers that care list them separately (gitUntracked).
@@ -835,26 +827,8 @@ func gitFilesBetween(root, from, to string) map[string]string {
 	if err != nil {
 		return nil
 	}
-	key := repoRelKey(info, root)
 	files := map[string]string{}
-	parts := strings.Split(string(out), "\x00")
-	for i := 0; i < len(parts); i++ {
-		st := parts[i]
-		if st == "" {
-			continue
-		}
-		code := st[:1]
-		if code == "R" || code == "C" {
-			i += 2 // R<score> \0 <src> \0 <dst>
-		} else {
-			i++
-		}
-		if i < len(parts) {
-			if k, ok := key(parts[i]); ok {
-				files[k] = code
-			}
-		}
-	}
+	parseNameStatusZ(out, repoRelKey(info, root), files, true)
 	return files
 }
 
@@ -1464,4 +1438,419 @@ func gitCommitsWebURL(root, branch string) string {
 		return fmt.Sprintf("https://%s/%s/%s/%s", host, path, seg, branch)
 	}
 	return fmt.Sprintf("https://%s/%s/%s", host, path, seg)
+}
+// GitStatusPayload contains the complete serialized git status event sent to the browser
+// over Server-Sent Events (SSE). It includes working tree status, staged files, dirty directories,
+// current branch, commit ahead/behind counts, and recent commits.
+type GitStatusPayload struct {
+	Git           bool              `json:"git"`                     // True if root is inside a git repository
+	GitChanges    int               `json:"gitChanges"`              // Total count of modified, added, deleted, or untracked files
+	GitFiles      []string          `json:"gitFiles"`                // List of modified file paths relative to root
+	Statuses      map[string]string `json:"statuses"`                // Relative path -> status code (e.g. "M", "A", "D", "U")
+	DirtyDirs     map[string]bool   `json:"dirtyDirs,omitempty"`     // Relative directory path -> true if any descendant is modified
+	Staged        map[string]bool   `json:"staged,omitempty"`        // Relative path -> true if file has staged changes
+	YourStatuses  map[string]string `json:"yourStatuses,omitempty"`  // PR mode: relative path -> reviewer modification status
+	YourDirtyDirs map[string]bool   `json:"yourDirtyDirs,omitempty"` // PR mode: directory path -> contains reviewer changes
+	Branch        string            `json:"branch,omitempty"`        // Active branch name
+	RecentCommits []GitCommit       `json:"recentCommits,omitempty"` // Recent git commits for commit list UI
+	CommitsURL    string            `json:"commitsUrl,omitempty"`    // Web URL to view commits on GitHub/forge
+	Ahead         int               `json:"ahead"`                   // Commits ahead of upstream tracking branch
+	Behind        int               `json:"behind"`                  // Commits behind upstream tracking branch
+	Rewritten     bool              `json:"rewritten,omitempty"`     // PR mode: HEAD no longer contains the PR head (an unpushed rebase); only a force-push updates the PR
+}
+
+// GitWatcher monitors git state changes in the background and broadcasts updates
+// to connected browser clients over SSE (/api/stream). It uses a hybrid detection strategy:
+//  1. Fast path: 1-second polling of .git metadata files (HEAD, index, packed-refs) to instantly
+//     detect CLI operations (git commit, git checkout, git add).
+//  2. Worktree path: adaptive polling of working tree file modifications.
+//  3. Manual triggers: immediate re-evaluations triggered on user UI actions.
+type GitWatcher struct {
+	ix   *Index
+	root string
+
+	mu      sync.Mutex
+	clients map[chan []byte]struct{}
+	active  atomic.Int32
+
+	triggerCh chan struct{}
+	stopCh    chan struct{}
+
+	lastIndexMod   time.Time
+	lastIndexSize  int64
+	lastHeadMod    time.Time
+	lastLogsMod    time.Time
+	lastFetchMod   time.Time
+	lastPackedMod  time.Time
+	lastHeadCommit string
+	lastAhead      int
+	lastBehind     int
+	lastRewritten  bool
+	lastPushedHead string
+	lastBranch     string
+	lastCommits    []GitCommit
+	lastCommitsURL string
+	hasMetaCache   bool
+	lastReady      bool
+	lastInGit      bool
+}
+
+// NewGitWatcher constructs a new GitWatcher attached to the given workspace index.
+func NewGitWatcher(ix *Index) *GitWatcher {
+	gw := &GitWatcher{
+		ix:             ix,
+		root:           ix.Root(),
+		clients:        make(map[chan []byte]struct{}),
+		triggerCh:      make(chan struct{}, 1),
+		stopCh:         make(chan struct{}),
+		lastHeadCommit: gitHeadCommit(ix.Root()),
+		lastReady:      ix.Ready(),
+		lastInGit:      gitAvailable(ix.Root()),
+	}
+	return gw
+}
+
+// Start begins the background monitoring goroutine.
+func (gw *GitWatcher) Start(ctx context.Context) {
+	if gitDisabled {
+		return
+	}
+
+	var gitdir string
+	if gitAvailable(gw.root) {
+		gitdir = gitDir(gw.root)
+		gw.recordGitMeta(gitdir)
+	}
+
+	go gw.loop(ctx, gitdir)
+}
+
+func (gw *GitWatcher) Stop() {
+	select {
+	case <-gw.stopCh:
+	default:
+		close(gw.stopCh)
+	}
+}
+
+// Trigger requests an immediate status check and broadcast.
+func (gw *GitWatcher) Trigger() {
+	select {
+	case gw.triggerCh <- struct{}{}:
+	default:
+	}
+}
+
+func (gw *GitWatcher) recordGitMeta(gitdir string) bool {
+	if gitdir == "" {
+		return false
+	}
+	changed := false
+
+	indexPath := filepath.Join(gitdir, "index")
+	if fi, err := os.Stat(indexPath); err == nil {
+		if fi.ModTime() != gw.lastIndexMod || fi.Size() != gw.lastIndexSize {
+			gw.lastIndexMod = fi.ModTime()
+			gw.lastIndexSize = fi.Size()
+			changed = true
+		}
+	}
+
+	headPath := filepath.Join(gitdir, "HEAD")
+	if fi, err := os.Stat(headPath); err == nil {
+		if fi.ModTime() != gw.lastHeadMod {
+			gw.lastHeadMod = fi.ModTime()
+			changed = true
+		}
+	}
+
+	packedPath := filepath.Join(gitdir, "packed-refs")
+	if fi, err := os.Stat(packedPath); err == nil {
+		if fi.ModTime() != gw.lastPackedMod {
+			gw.lastPackedMod = fi.ModTime()
+			changed = true
+		}
+	}
+
+	logsHeadPath := filepath.Join(gitdir, "logs", "HEAD")
+	if fi, err := os.Stat(logsHeadPath); err == nil {
+		if fi.ModTime() != gw.lastLogsMod {
+			gw.lastLogsMod = fi.ModTime()
+			changed = true
+		}
+	}
+
+	fetchHeadPath := filepath.Join(gitdir, "FETCH_HEAD")
+	if fi, err := os.Stat(fetchHeadPath); err == nil {
+		if fi.ModTime() != gw.lastFetchMod {
+			gw.lastFetchMod = fi.ModTime()
+			changed = true
+		}
+	}
+
+	return changed
+}
+
+func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
+	metaTicker := time.NewTicker(1 * time.Second)
+	defer metaTicker.Stop()
+
+	adaptiveInterval := 1 * time.Second
+	worktreeTicker := time.NewTicker(adaptiveInterval)
+	defer worktreeTicker.Stop()
+	unchangedStreak := 0
+
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	resetInterval := func(d time.Duration) {
+		if d != adaptiveInterval {
+			adaptiveInterval = d
+			worktreeTicker.Reset(adaptiveInterval)
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-gw.stopCh:
+			return
+
+		case <-metaTicker.C:
+			// Fast path: check .git metadata (HEAD, index, packed-refs).
+			// If touched by git CLI (commit, checkout, add, etc.), refresh immediately.
+			if gw.active.Load() > 0 {
+				if gitdir == "" && gitAvailable(gw.root) {
+					gitdir = gitDir(gw.root)
+				}
+				if gw.recordGitMeta(gitdir) {
+					unchangedStreak = 0
+					resetInterval(1 * time.Second)
+					gw.checkAndBroadcast()
+				}
+			}
+
+		case <-worktreeTicker.C:
+			// Worktree path: check for modifications in files outside git CLI.
+			// Only run when at least one client is actively listening.
+			if gw.active.Load() > 0 {
+				if gitdir == "" && gitAvailable(gw.root) {
+					gitdir = gitDir(gw.root)
+				}
+				metaDirty := gw.recordGitMeta(gitdir)
+				start := time.Now()
+				_, changed := gw.refreshInternal(!metaDirty)
+				dur := time.Since(start)
+				if changed || metaDirty {
+					unchangedStreak = 0
+				} else if unchangedStreak < 4 {
+					unchangedStreak++
+				}
+				// Adapt interval based on execution speed and idle streak: min 1s, max 10s.
+				newInterval := dur * 5
+				backoff := time.Duration(1<<unchangedStreak) * time.Second
+				if backoff > newInterval {
+					newInterval = backoff
+				}
+				if newInterval < 1*time.Second {
+					newInterval = 1 * time.Second
+				} else if newInterval > 10*time.Second {
+					newInterval = 10 * time.Second
+				}
+				resetInterval(newInterval)
+			}
+
+		case <-gw.triggerCh:
+			// Debounce rapid triggers
+			time.Sleep(50 * time.Millisecond)
+			// Drain any pending triggers queued during debounce
+			select {
+			case <-gw.triggerCh:
+			default:
+			}
+			unchangedStreak = 0
+			resetInterval(1 * time.Second)
+			gw.checkAndBroadcast()
+
+		case <-heartbeatTicker.C:
+			if gw.active.Load() > 0 {
+				gw.broadcast([]byte(": ping\n\n"))
+			}
+		}
+	}
+}
+
+// Refresh runs an immediate UpdateGitStatus, broadcasts to subscribers if changed,
+// and returns the latest git status payload.
+func (gw *GitWatcher) Refresh() GitStatusPayload {
+	p, _ := gw.refreshInternal(false)
+	return p
+}
+
+func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool) {
+	ready := gw.ix.Ready()
+	inGit := gitAvailable(gw.root)
+	count, files, changed, statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs := gw.ix.UpdateGitStatus()
+
+	gw.mu.Lock()
+	if ready != gw.lastReady || inGit != gw.lastInGit {
+		gw.lastReady = ready
+		gw.lastInGit = inGit
+		gw.hasMetaCache = false
+		changed = true
+	}
+	gw.mu.Unlock()
+
+	var recentCommits []GitCommit
+	var ahead, behind int
+	var rewritten bool
+	var branch, commitsURL string
+	if inGit {
+		pushedHead := gw.ix.PushedHead()
+		gw.mu.Lock()
+		canReuseMeta := worktreeOnly && gw.hasMetaCache && gw.lastPushedHead == pushedHead
+		if canReuseMeta {
+			recentCommits = gw.lastCommits
+			ahead = gw.lastAhead
+			behind = gw.lastBehind
+			rewritten = gw.lastRewritten
+			branch = gw.lastBranch
+			commitsURL = gw.lastCommitsURL
+		}
+		gw.mu.Unlock()
+
+		if !canReuseMeta {
+			recentCommits = gitRecentCommits(gw.root, 5)
+			headCommit := ""
+			if len(recentCommits) > 0 {
+				headCommit = recentCommits[0].Hash
+			}
+			ahead, behind = gw.aheadBehind()
+			if validSHA(pushedHead) && ahead > 0 {
+				rewritten = !gitIsAncestor(gw.root, pushedHead, "HEAD")
+			}
+			branch = gitCurrentBranch(gw.root)
+			commitsURL = gitCommitsWebURL(gw.root, branch)
+
+			gw.mu.Lock()
+			if headCommit != gw.lastHeadCommit || branch != gw.lastBranch || ahead != gw.lastAhead || behind != gw.lastBehind || rewritten != gw.lastRewritten {
+				gw.lastHeadCommit = headCommit
+				gw.lastAhead = ahead
+				gw.lastBehind = behind
+				gw.lastRewritten = rewritten
+				changed = true
+			}
+			gw.lastPushedHead = pushedHead
+			gw.lastBranch = branch
+			gw.lastCommits = recentCommits
+			gw.lastCommitsURL = commitsURL
+			if ready {
+				gw.hasMetaCache = true
+			}
+			gw.mu.Unlock()
+		}
+	}
+
+	payload := GitStatusPayload{
+		Git:           inGit,
+		GitChanges:    count,
+		GitFiles:      files,
+		Statuses:      statuses,
+		DirtyDirs:     dirtyDirs,
+		Staged:        staged,
+		YourStatuses:  yourStatuses,
+		YourDirtyDirs: yourDirtyDirs,
+		Branch:        branch,
+		RecentCommits: recentCommits,
+		CommitsURL:    commitsURL,
+		Ahead:         ahead,
+		Behind:        behind,
+		Rewritten:     rewritten,
+	}
+	if changed {
+		data, err := json.Marshal(payload)
+		if err == nil {
+			msg := []byte(fmt.Sprintf("event: git-status\ndata: %s\n\n", data))
+			gw.broadcast(msg)
+		}
+	}
+	return payload, changed
+}
+
+// aheadBehind counts local commits not yet on the remote. In a PR review the
+// checkout is a detached HEAD with no upstream, so "ahead" is measured from the
+// PR head it was checked out at (or last pushed to) -- exactly the reviewer's
+// own commits. Behind stays 0 there: knowing it needs a fetch, which Pull does.
+func (gw *GitWatcher) aheadBehind() (ahead, behind int) {
+	if head := gw.ix.PushedHead(); head != "" {
+		return gitCountSince(gw.root, head), 0
+	}
+	ahead, behind, _ = gitAheadBehind(gw.root)
+	return ahead, behind
+}
+
+// checkAndBroadcast runs UpdateGitStatus and broadcasts to subscribers if changed.
+// Returns duration of the status check.
+func (gw *GitWatcher) checkAndBroadcast() time.Duration {
+	start := time.Now()
+	gw.Refresh()
+	return time.Since(start)
+}
+
+func (gw *GitWatcher) broadcast(msg []byte) {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	for ch := range gw.clients {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
+}
+
+// Subscribe registers a new SSE listener channel and returns an unregister cancel function.
+func (gw *GitWatcher) Subscribe() (<-chan []byte, func()) {
+	ch := make(chan []byte, 16)
+
+	// Immediately send current state to newly connected client
+	inGit := gitAvailable(gw.root)
+	var initialMsg []byte
+	if inGit {
+		payload := gw.Refresh()
+		if data, err := json.Marshal(payload); err == nil {
+			initialMsg = []byte(fmt.Sprintf("event: git-status\ndata: %s\n\n", data))
+		}
+	} else {
+		payload := GitStatusPayload{
+			Git:        false,
+			GitChanges: 0,
+			GitFiles:   []string{},
+			Statuses:   map[string]string{},
+		}
+		if data, err := json.Marshal(payload); err == nil {
+			initialMsg = []byte(fmt.Sprintf("event: git-status\ndata: %s\n\n", data))
+		}
+	}
+
+	if len(initialMsg) > 0 {
+		ch <- initialMsg
+	}
+
+	gw.mu.Lock()
+	gw.clients[ch] = struct{}{}
+	gw.active.Add(1)
+	gw.mu.Unlock()
+
+	cancel := func() {
+		gw.mu.Lock()
+		if _, ok := gw.clients[ch]; ok {
+			delete(gw.clients, ch)
+			gw.active.Add(-1)
+			close(ch)
+		}
+		gw.mu.Unlock()
+	}
+
+	return ch, cancel
 }

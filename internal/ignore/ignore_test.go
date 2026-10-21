@@ -111,7 +111,7 @@ func compileRegexOnly(p string) (Rule, bool) {
 	if r.Kind == RKRegex {
 		return r, true
 	}
-	forced, ok := CompilePatternRegex(p)
+	forced, ok := compile(p, false)
 	if !ok {
 		return r, false
 	}

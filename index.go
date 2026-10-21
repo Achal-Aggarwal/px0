@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -141,16 +140,6 @@ func (ix *Index) Ready() bool {
 	}
 }
 
-// WaitReady blocks until the initial index build completes or ctx is canceled.
-func (ix *Index) WaitReady(ctx context.Context) error {
-	select {
-	case <-ix.readyCh:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 // Stats returns the total indexed file count, the timestamp of the build, and duration in milliseconds.
 func (ix *Index) Stats() (files int, builtAt time.Time, ms int64) {
 	ix.mu.RLock()
@@ -183,34 +172,6 @@ func (ix *Index) GitStatusMap() map[string]string {
 	}
 	res := make(map[string]string, len(ix.gitStatusMap))
 	for k, v := range ix.gitStatusMap {
-		res[k] = v
-	}
-	return res
-}
-
-// GitStagedMap returns a copy of the mapping from relative path to staged boolean flag.
-func (ix *Index) GitStagedMap() map[string]bool {
-	ix.mu.RLock()
-	defer ix.mu.RUnlock()
-	if ix.gitStagedMap == nil {
-		return map[string]bool{}
-	}
-	res := make(map[string]bool, len(ix.gitStagedMap))
-	for k, v := range ix.gitStagedMap {
-		res[k] = v
-	}
-	return res
-}
-
-// GitYourStatusMap returns a copy of the reviewer local modifications map in PR mode.
-func (ix *Index) GitYourStatusMap() map[string]string {
-	ix.mu.RLock()
-	defer ix.mu.RUnlock()
-	if ix.gitYourStatusMap == nil {
-		return map[string]string{}
-	}
-	res := make(map[string]string, len(ix.gitYourStatusMap))
-	for k, v := range ix.gitYourStatusMap {
 		res[k] = v
 	}
 	return res
@@ -360,6 +321,32 @@ func sortNodes(kids []Node) {
 	})
 }
 
+func computeDirtyState(gs, ys map[string]string) (dirtyDirs, yourDirtyDirs map[string]bool, gitFiles []string) {
+	dirtyDirs = map[string]bool{}
+	for p := range gs {
+		gitFiles = append(gitFiles, p)
+		for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
+			p = p[:i]
+			dirtyDirs[p] = true
+		}
+	}
+	sort.Slice(gitFiles, func(i, j int) bool {
+		si, sj := gs[gitFiles[i]], gs[gitFiles[j]]
+		if (si != "U") != (sj != "U") {
+			return si != "U"
+		}
+		return gitFiles[i] < gitFiles[j]
+	})
+	yourDirtyDirs = map[string]bool{}
+	for p := range ys {
+		for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
+			p = p[:i]
+			yourDirtyDirs[p] = true
+		}
+	}
+	return dirtyDirs, yourDirtyDirs, gitFiles
+}
+
 // Build walks the tree once, honouring .gitignore at every level, and
 // materialises both the flat file list (for fuzzy find and search) and the
 // directory map (for the tree view). Root entries are published immediately so
@@ -387,33 +374,7 @@ func (ix *Index) Build() {
 	gsCh := make(chan gitRes, 1)
 	go func() {
 		gs, staged, yourStatuses := gitStatusAndStagedAgainst(ix.root, base, head)
-		dirtyDirs := map[string]bool{}
-		var gitFiles []string
-		if gs != nil {
-			for p := range gs {
-				gitFiles = append(gitFiles, p)
-				for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-					p = p[:i]
-					dirtyDirs[p] = true
-				}
-			}
-			sort.Slice(gitFiles, func(i, j int) bool {
-				si, sj := gs[gitFiles[i]], gs[gitFiles[j]]
-				if (si != "U") != (sj != "U") {
-					return si != "U"
-				}
-				return gitFiles[i] < gitFiles[j]
-			})
-		}
-		yourDirtyDirs := map[string]bool{}
-		if yourStatuses != nil {
-			for p := range yourStatuses {
-				for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-					p = p[:i]
-					yourDirtyDirs[p] = true
-				}
-			}
-		}
+		dirtyDirs, yourDirtyDirs, gitFiles := computeDirtyState(gs, yourStatuses)
 		gsCh <- gitRes{
 			gs:           gs,
 			staged:       staged,
@@ -700,36 +661,10 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 	if sg == nil {
 		sg = map[string]bool{}
 	}
-
-	newYourDirtyDirs := map[string]bool{}
-	if head != "" {
-		if ys == nil {
-			ys = map[string]string{}
-		}
-		for p := range ys {
-			for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-				p = p[:i]
-				newYourDirtyDirs[p] = true
-			}
-		}
+	if head != "" && ys == nil {
+		ys = map[string]string{}
 	}
-
-	newDirtyDirs := map[string]bool{}
-	var newGitFiles []string
-	for p := range gs {
-		newGitFiles = append(newGitFiles, p)
-		for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-			p = p[:i]
-			newDirtyDirs[p] = true
-		}
-	}
-	sort.Slice(newGitFiles, func(i, j int) bool {
-		si, sj := gs[newGitFiles[i]], gs[newGitFiles[j]]
-		if (si != "U") != (sj != "U") {
-			return si != "U"
-		}
-		return newGitFiles[i] < newGitFiles[j]
-	})
+	newDirtyDirs, newYourDirtyDirs, newGitFiles := computeDirtyState(gs, ys)
 
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
@@ -898,7 +833,7 @@ func (ix *Index) TouchPath(rel string) {
 		}
 		if !found {
 			ix.children[parentDir] = append(ix.children[parentDir], Node{
-				Name: subName(segName),
+				Name: segName,
 				Path: subDir,
 				Dir:  true,
 			})
@@ -970,6 +905,4 @@ func (ix *Index) TouchPath(rel string) {
 		}
 	}
 }
-
-func subName(s string) string { return s }
 
