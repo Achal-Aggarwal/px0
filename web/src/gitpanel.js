@@ -135,7 +135,7 @@ export function updateGitPanel(payload) {
   const commitBtn = $('#git-commit');
   if (commitBtn) {
     commitBtn.disabled = staged === 0;
-    commitBtn.textContent = staged > 0 ? `Commit (${staged})` : 'Commit';
+    if (!commitBtn._flashTimer) commitBtn.textContent = 'Commit';
     commitBtn.title = staged === 0
       ? 'Tick modified files to stage them for commit'
       : `Commit ${staged} staged file${staged > 1 ? 's' : ''}`;
@@ -241,7 +241,6 @@ async function doCommit() {
     return;
   }
   const btn = $('#git-commit');
-  const prevText = btn?.textContent || 'Commit';
   if (btn) {
     btn.disabled = true;
     btn.textContent = 'Committing...';
@@ -256,17 +255,18 @@ async function doCommit() {
     clearGitNotice();
     showToast('✓', 'Committed');
     if (btn) {
-      btn.textContent = prevText;
+      btn.textContent = 'Commit';
       flashActionSuccess(btn, 'Committed');
     }
     await fetchRecentCommits();
     await refreshUnpushed();
     await triggerRefresh();
   } catch (e) {
-    if (btn) btn.textContent = prevText;
+    if (btn) {
+      btn.textContent = 'Commit';
+      btn.disabled = false;
+    }
     showGitError('Commit failed', e.message);
-  } finally {
-    if (btn) btn.disabled = false;
   }
 }
 
