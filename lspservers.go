@@ -702,6 +702,54 @@ func (m *lspManager) Close() {
 	wg.Wait()
 }
 
+// ReapIdle shuts down any running language server that has not served a request
+// or opened a document within maxIdle, without marking it stopped so it
+// transparently respawns on next demand.
+func (m *lspManager) ReapIdle(maxIdle time.Duration) {
+	if maxIdle <= 0 {
+		return
+	}
+	now := time.Now()
+	var idle []*lspClient
+	m.mu.Lock()
+	for name, c := range m.clients {
+		if c == nil || c.busy() {
+			continue
+		}
+		last := time.Unix(0, c.lastUsed.Load())
+		if now.Sub(last) >= maxIdle {
+			idle = append(idle, c)
+			delete(m.clients, name)
+		}
+	}
+	m.mu.Unlock()
+	for _, c := range idle {
+		go c.shutdown()
+	}
+}
+
+// Diagnostics returns the latest published LSP diagnostics for the given file,
+// or an empty slice if no language server is running for its extension.
+func (m *lspManager) Diagnostics(abs, rel string) []LSPDiagnostic {
+	def := m.defFor(rel)
+	if def == nil {
+		return []LSPDiagnostic{}
+	}
+	m.mu.RLock()
+	c := m.clients[def.Name]
+	m.mu.RUnlock()
+	if c == nil || c.alive() != nil {
+		return []LSPDiagnostic{}
+	}
+	uri := pathToURI(abs)
+	c.mu.RLock()
+	list := c.diagnostics[uri]
+	out := make([]LSPDiagnostic, len(list))
+	copy(out, list)
+	c.mu.RUnlock()
+	return out
+}
+
 type errFailed struct{ why string }
 
 func (e errFailed) Error() string { return e.why }

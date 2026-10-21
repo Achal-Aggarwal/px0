@@ -42,7 +42,8 @@ const (
 	// makes every later chunk a map lookup. Above it, windows stay the only path.
 	bgLimit = 2 << 20
 
-	cacheBudget = 512 << 20
+	cacheBudget     = 64 << 20
+	idleCacheBudget = 8 << 20
 )
 
 // classFor maps a chroma token type onto a short CSS class. Short names matter:
@@ -569,6 +570,25 @@ func Evict(abs string) bool {
 // EvictAll clears the syntax highlighting document cache entirely.
 func EvictAll() {
 	cache.clear()
+}
+
+// Scavenge trims the syntax highlighting cache down to idleCacheBudget by
+// evicting the least recently used documents. The most recently used document
+// is always retained.
+func Scavenge() {
+	cache.scavenge(idleCacheBudget)
+}
+
+func (c *hlCache) scavenge(budget int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.used > budget && c.ll.Len() > 1 {
+		back := c.ll.Back()
+		it := back.Value.(*hlItem)
+		c.ll.Remove(back)
+		delete(c.items, it.key)
+		c.used -= it.val.bytes
+	}
 }
 
 func (c *hlCache) clear() {

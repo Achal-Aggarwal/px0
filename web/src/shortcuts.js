@@ -17,7 +17,7 @@ import { SEL_KEYS, runSelectionAction, selectAll, clearSelectAll, copySelectAll,
 import { cycleTheme } from './theme.js';
 import { previewing, togglePreview, previewKey, selectPreview } from './markdown.js';
 import { exitMermaidFullscreen } from './mermaid.js';
-import { toggleDiff } from './diff.js';
+import { toggleDiff, stepDiffHunk, stepChangedFile } from './diff.js';
 import { openSettings, closeSettings, isSettingsOpen } from './settings.js';
 import { handleVimKeyDown, isVimEnabled, getVimMode, showVimHelp, closeVimHelp } from './vim.js';
 import { handleImageKey } from './imageview.js';
@@ -36,6 +36,7 @@ export const SHORTCUTS = [
   [['Mod+Shift+F'], 'Search in files'], [['Mod+Shift+R'], 'Refresh workspace'], [['Mod+F'], 'Find in file'],
   [['Mod+E'], 'Toggle edit mode'], [['Mod+S'], 'Save file (in edit mode)'],
   [['Mod+G'], 'Go to line'], [['Mod+D'], 'Toggle diff view (git)'], [['Alt+Z'], 'Toggle word wrap'],
+  [['[c', ']c'], 'Previous / next diff hunk'], [['[f', ']f'], 'Previous / next changed file'],
   [['Alt+M'], 'Toggle Markdown / table preview'],
   [['Enter', 'Shift+Enter'], 'Next / previous match'],
   [['F12', 'Mod+Click'], 'Go to definition'], [['Shift+F12'], 'Find all references'],
@@ -226,6 +227,31 @@ export function initShortcuts() {
     }
 
     if (inField(document.activeElement)) return;
+
+    // [c / ]c (prev/next diff hunk) and [f / ]f (prev/next changed file) chords
+    if (!mod && !e.altKey && !e.shiftKey) {
+      if (e.key === '[' || e.key === ']') {
+        S._bracketPrefix = e.key;
+        S._bracketTime = performance.now();
+        return;
+      }
+      if (S._bracketPrefix && performance.now() - (S._bracketTime || 0) < 900) {
+        const dir = S._bracketPrefix === ']' ? 1 : -1;
+        S._bracketPrefix = '';
+        if (e.key === 'c') {
+          e.preventDefault();
+          stepDiffHunk(dir);
+          return;
+        }
+        if (e.key === 'f') {
+          e.preventDefault();
+          stepChangedFile(dir);
+          return;
+        }
+      } else {
+        S._bracketPrefix = '';
+      }
+    }
 
     // Select all takes the open file only, never the sidebar or status bar around it.
     const plainMod = mod && !e.shiftKey && !e.altKey;

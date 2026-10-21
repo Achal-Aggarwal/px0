@@ -53,18 +53,21 @@ var (
 
 // threadTurn is one user message and the harness's answer to it.
 type threadTurn struct {
-	ID      int      `json:"id"`
-	Prompt  string   `json:"prompt"`
-	Reply   string   `json:"reply"`
-	Tools   []string `json:"tools,omitempty"`   // what the harness did, one line each
-	Changed []string `json:"changed,omitempty"` // files this turn touched
-	Tracked bool     `json:"tracked"`           // false outside git: Changed is unknown, not empty
-	Error   string   `json:"error,omitempty"`
-	Running bool     `json:"running"`
-	Harness string   `json:"harness"`
-	Model   string   `json:"model,omitempty"`
-	Started int64    `json:"started"` // unix ms
-	Ms      int64    `json:"ms"`
+	ID        int      `json:"id"`
+	Prompt    string   `json:"prompt"`
+	Reply     string   `json:"reply"`
+	Tools     []string `json:"tools,omitempty"`     // what the harness did, one line each
+	Changed   []string `json:"changed,omitempty"`   // files this turn touched
+	BeforeSHA string   `json:"beforeSha,omitempty"` // ref-free git snapshot commit before the turn ran
+	AfterSHA  string   `json:"afterSha,omitempty"`  // ref-free git snapshot commit after the turn ran
+	Reverted  bool     `json:"reverted,omitempty"`  // true if the user reverted this turn's file changes
+	Tracked   bool     `json:"tracked"`             // false outside git: Changed is unknown, not empty
+	Error     string   `json:"error,omitempty"`
+	Running   bool     `json:"running"`
+	Harness   string   `json:"harness"`
+	Model     string   `json:"model,omitempty"`
+	Started   int64    `json:"started"` // unix ms
+	Ms        int64    `json:"ms"`
 }
 
 // thread is the persisted conversation. Path and lines are where it was
@@ -596,6 +599,7 @@ func (tm *threadManager) runTurn(ctx context.Context, cancel context.CancelFunc,
 	}
 
 	before := worktreeSnapshot(tm.root)
+	beforeSHA := gitSnapshotWorktree(tm.root)
 	started := time.Now()
 	stderr := &tailBuffer{max: agentLogBytes}
 	sink := &threadSink{tm: tm, tid: r.tid, turn: r.turn, harness: r.name}
@@ -614,6 +618,10 @@ func (tm *threadManager) runTurn(ctx context.Context, cancel context.CancelFunc,
 	}
 
 	changed := changedSince(tm.root, before)
+	afterSHA := ""
+	if len(changed) > 0 && beforeSHA != "" {
+		afterSHA = gitSnapshotWorktree(tm.root)
+	}
 	tm.agent.settle(changed)
 
 	tm.mu.Lock()
@@ -627,6 +635,8 @@ func (tm *threadManager) runTurn(ctx context.Context, cancel context.CancelFunc,
 		r.turn.Running = false
 		r.turn.Ms = time.Since(started).Milliseconds()
 		r.turn.Changed = changed
+		r.turn.BeforeSHA = beforeSHA
+		r.turn.AfterSHA = afterSHA
 		if err != nil {
 			msg := err.Error()
 			if tail := strings.TrimSpace(stderr.String()); tail != "" && strings.TrimSpace(r.turn.Reply) == "" {
@@ -687,6 +697,59 @@ func (tm *threadManager) Close() {
 	for _, cancel := range tm.cancels {
 		cancel()
 	}
+}
+
+// RevertTurn restores the files touched by a specific turn back to their
+// pre-turn snapshot (BeforeSHA).
+func (tm *threadManager) RevertTurn(id string, turnID int) (*thread, []string, error) {
+	tm.mu.Lock()
+	t := tm.threads[id]
+	if t == nil {
+		tm.mu.Unlock()
+		return nil, nil, errThreadGone
+	}
+	if t.running() {
+		tm.mu.Unlock()
+		return nil, nil, errThreadBusy
+	}
+	var target *threadTurn
+	for _, tr := range t.Turns {
+		if tr.ID == turnID {
+			target = tr
+			break
+		}
+	}
+	if target == nil {
+		tm.mu.Unlock()
+		return nil, nil, errors.New("no such turn")
+	}
+	if target.BeforeSHA == "" || len(target.Changed) == 0 {
+		tm.mu.Unlock()
+		return nil, nil, errors.New("no snapshot available for this turn")
+	}
+	beforeSHA := target.BeforeSHA
+	paths := append([]string(nil), target.Changed...)
+	tm.mu.Unlock()
+
+	if err := gitRestoreSnapshotPaths(tm.root, beforeSHA, paths); err != nil {
+		return nil, nil, err
+	}
+	tm.agent.settle(paths)
+
+	tm.mu.Lock()
+	if t := tm.threads[id]; t != nil {
+		for _, tr := range t.Turns {
+			if tr.ID == turnID {
+				tr.Reverted = true
+				break
+			}
+		}
+		t.Updated = time.Now().UnixMilli()
+		tm.saveLocked()
+		tm.publishThreadLocked(t)
+	}
+	tm.mu.Unlock()
+	return tm.Get(id), paths, nil
 }
 
 // ---------------------------------------------------------------- output
@@ -1198,6 +1261,32 @@ func (s *Server) handleThreadDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"deleted": s.threads.Delete(id)})
+}
+
+func (s *Server) handleThreadRevert(w http.ResponseWriter, r *http.Request) {
+	if !localPost(w, r) || !s.threadsOrFail(w) {
+		return
+	}
+	var body struct {
+		ID   string `json:"id"`
+		Turn int    `json:"turn"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" || body.Turn < 1 {
+		fail(w, http.StatusBadRequest, "id and turn are required")
+		return
+	}
+	t, paths, err := s.threads.RevertTurn(body.ID, body.Turn)
+	if err != nil {
+		fail(w, threadStatus(err), err.Error())
+		return
+	}
+	for _, p := range paths {
+		s.ix.TouchPath(p)
+	}
+	if s.gitWatcher != nil {
+		s.gitWatcher.Trigger()
+	}
+	writeJSON(w, map[string]any{"ok": true, "thread": t, "reverted": paths})
 }
 
 // handleThreadStream is the SSE feed: one thread's snapshot and live deltas

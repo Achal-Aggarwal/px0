@@ -408,6 +408,165 @@ func gitUnstage(root, relpath string) error {
 	return nil
 }
 
+// gitApplyHunk applies a single unified diff hunk for relpath to the index
+// ("stage" / "unstage") or working tree ("discard" reverses the hunk in place).
+func gitApplyHunk(root, relpath, hunk, action string) error {
+	info := gitProbe(root)
+	if !info.ok {
+		return errors.New("git repository not available")
+	}
+	hunk = strings.TrimRight(hunk, "\r\n")
+	if !strings.HasPrefix(hunk, "@@") {
+		return errors.New("hunk must start with @@ header")
+	}
+	absTarget := filepath.Join(root, filepath.FromSlash(relpath))
+	repoRel, err := filepath.Rel(info.toplevel, absTarget)
+	if err != nil {
+		return err
+	}
+	repoRel = filepath.ToSlash(repoRel)
+
+	var patch strings.Builder
+	fmt.Fprintf(&patch, "diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n%s\n", repoRel, repoRel, repoRel, repoRel, hunk)
+	patchBytes := []byte(patch.String())
+
+	runApply := func(flags ...string) ([]byte, error) {
+		args := append([]string{"-C", info.toplevel, "apply", "--unidiff-zero", "--whitespace=nowarn"}, flags...)
+		args = append(args, "-")
+		cmd := exec.Command("git", args...)
+		cmd.Stdin = bytes.NewReader(patchBytes)
+		return cmd.CombinedOutput()
+	}
+
+	switch action {
+	case "stage":
+		if out, err := runApply("--cached"); err != nil {
+			return fmt.Errorf("git apply --cached: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	case "unstage":
+		if out, err := runApply("--cached", "-R"); err != nil {
+			return fmt.Errorf("git apply --cached -R: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	case "discard":
+		// Try reversing against both index and worktree first (in case the hunk was
+		// staged), falling back to worktree-only when the hunk is unstaged.
+		if _, err := runApply("--index", "-R"); err != nil {
+			if out, err2 := runApply("-R"); err2 != nil {
+				return fmt.Errorf("git apply -R: %w: %s", err2, strings.TrimSpace(string(out)))
+			}
+		}
+	default:
+		return fmt.Errorf("unknown hunk action %q", action)
+	}
+	return nil
+}
+
+// gitSnapshotWorktree captures the entire working tree (including unstaged and
+// untracked files) as a ref-free commit SHA in the repository's object database
+// using a temporary index in os.TempDir(). Neither HEAD nor the real git index
+// is modified. Returns "" if git is unavailable or the snapshot fails.
+func gitSnapshotWorktree(root string) string {
+	info := gitProbe(root)
+	if !info.ok {
+		return ""
+	}
+	tmpFile, err := os.CreateTemp("", "px0-idx-*")
+	if err != nil {
+		return ""
+	}
+	tmpIdx := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpIdx)
+
+	// Seed the temp index from the real index so git add only hashes modified/untracked files.
+	realIdx := filepath.Join(info.gitdir, "index")
+	if data, err := os.ReadFile(realIdx); err == nil {
+		_ = os.WriteFile(tmpIdx, data, 0o600)
+	} else {
+		_ = os.Remove(tmpIdx)
+	}
+
+	env := append(os.Environ(),
+		"GIT_INDEX_FILE="+tmpIdx,
+		"GIT_AUTHOR_NAME=px0",
+		"GIT_AUTHOR_EMAIL=px0@localhost",
+		"GIT_COMMITTER_NAME=px0",
+		"GIT_COMMITTER_EMAIL=px0@localhost",
+	)
+
+	addCmd := exec.Command("git", "-C", root, "add", "-A")
+	addCmd.Env = env
+	if addCmd.Run() != nil {
+		return ""
+	}
+
+	wtCmd := exec.Command("git", "-C", root, "write-tree")
+	wtCmd.Env = env
+	treeOut, err := wtCmd.Output()
+	if err != nil {
+		return ""
+	}
+	treeSHA := strings.TrimSpace(string(treeOut))
+	if !validSHA(treeSHA) {
+		return ""
+	}
+
+	ctArgs := []string{"-C", root, "commit-tree", treeSHA, "-m", "px0 turn snapshot"}
+	if headOut, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD").Output(); err == nil {
+		if headSHA := strings.TrimSpace(string(headOut)); validSHA(headSHA) {
+			ctArgs = []string{"-C", root, "commit-tree", treeSHA, "-p", headSHA, "-m", "px0 turn snapshot"}
+		}
+	}
+	ctCmd := exec.Command("git", ctArgs...)
+	ctCmd.Env = env
+	commitOut, err := ctCmd.Output()
+	if err != nil {
+		return ""
+	}
+	sha := strings.TrimSpace(string(commitOut))
+	if !validSHA(sha) {
+		return ""
+	}
+	return sha
+}
+
+// gitRestoreSnapshotPaths restores the specified root-relative paths to their
+// state in snapshotSHA, removing any path that did not exist in snapshotSHA.
+func gitRestoreSnapshotPaths(root, snapshotSHA string, paths []string) error {
+	info := gitProbe(root)
+	if !info.ok {
+		return errors.New("git repository not available")
+	}
+	if !validSHA(snapshotSHA) {
+		return errors.New("invalid snapshot SHA")
+	}
+	for _, rel := range paths {
+		clean := filepath.Clean(filepath.FromSlash(rel))
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || filepath.IsAbs(clean) {
+			continue
+		}
+		abs := filepath.Join(root, clean)
+		repoRel, err := filepath.Rel(info.toplevel, abs)
+		if err != nil {
+			continue
+		}
+		repoRel = filepath.ToSlash(repoRel)
+
+		// Check if the path existed in snapshotSHA.
+		if exec.Command("git", "-C", info.toplevel, "cat-file", "-e", snapshotSHA+":"+repoRel).Run() == nil {
+			if out, err := exec.Command("git", "-C", info.toplevel, "checkout", snapshotSHA, "--", repoRel).CombinedOutput(); err != nil {
+				return fmt.Errorf("git checkout %s: %w: %s", rel, err, strings.TrimSpace(string(out)))
+			}
+			// Reset index entry to HEAD if HEAD has it, or unstage if it was newly added.
+			_ = exec.Command("git", "-C", info.toplevel, "reset", "-q", "HEAD", "--", repoRel).Run()
+		} else {
+			_ = exec.Command("git", "-C", info.toplevel, "rm", "-f", "--ignore-unmatch", "--cached", "--", repoRel).Run()
+			_ = os.Remove(abs)
+		}
+	}
+	return nil
+}
+
 // gitCommit commits whatever is currently staged. Refuses up front when
 // nothing is staged so the caller gets a clear message instead of git's own
 // "nothing to commit" noise.

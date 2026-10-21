@@ -1970,3 +1970,176 @@ func TestRemoteHostPath(t *testing.T) {
 		}
 	}
 }
+
+func TestGitApplyHunk(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	file := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(file, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("init")
+	run("config", "user.email", "t@example.com")
+	run("config", "user.name", "T")
+	run("config", "commit.gpgsign", "false")
+	run("add", "a.txt")
+	run("commit", "-qm", "init")
+
+	if err := os.WriteFile(file, []byte("one\nTWO\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hunk := "@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n"
+	if err := gitApplyHunk(root, "a.txt", hunk, "stage"); err != nil {
+		t.Fatalf("stage hunk: %v", err)
+	}
+	_, staged, _ := gitStatusAndStagedAgainst(root, "", "")
+	if !staged["a.txt"] {
+		t.Fatalf("expected a.txt to be staged after gitApplyHunk(stage)")
+	}
+	if err := gitApplyHunk(root, "a.txt", hunk, "unstage"); err != nil {
+		t.Fatalf("unstage hunk: %v", err)
+	}
+	_, staged, _ = gitStatusAndStagedAgainst(root, "", "")
+	if staged["a.txt"] {
+		t.Fatalf("expected a.txt to be unstaged after gitApplyHunk(unstage)")
+	}
+	if err := gitApplyHunk(root, "a.txt", hunk, "discard"); err != nil {
+		t.Fatalf("discard hunk: %v", err)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "one\ntwo\nthree\n" {
+		t.Fatalf("got %q after discard, want original content", string(got))
+	}
+}
+
+func TestGitSnapshotAndRestore(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	fileA := filepath.Join(root, "a.go")
+	if err := os.WriteFile(fileA, []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("init")
+	run("config", "user.email", "t@example.com")
+	run("config", "user.name", "T")
+	run("config", "commit.gpgsign", "false")
+	run("add", "a.go")
+	run("commit", "-qm", "init")
+
+	// Make a dirty unstaged edit before snapshot
+	if err := os.WriteFile(fileA, []byte("package a\n// pre-turn edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeSHA := gitSnapshotWorktree(root)
+	if beforeSHA == "" {
+		t.Fatal("gitSnapshotWorktree returned empty SHA")
+	}
+
+	// Simulate an agent turn modifying a.go and creating b.go
+	fileB := filepath.Join(root, "b.go")
+	if err := os.WriteFile(fileA, []byte("package a\n// agent turn edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("package a\n// new file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	afterSHA := gitSnapshotWorktree(root)
+	if afterSHA == "" || afterSHA == beforeSHA {
+		t.Fatalf("afterSHA = %q, beforeSHA = %q", afterSHA, beforeSHA)
+	}
+
+	diffText := gitDiffBetween(root, "a.go", beforeSHA, afterSHA)
+	if !strings.Contains(diffText, "+// agent turn edit") {
+		t.Fatalf("unexpected diff between snapshots: diff=%q", diffText)
+	}
+
+	// Restore both files to beforeSHA
+	if err := gitRestoreSnapshotPaths(root, beforeSHA, []string{"a.go", "b.go"}); err != nil {
+		t.Fatalf("gitRestoreSnapshotPaths: %v", err)
+	}
+	gotA, err := os.ReadFile(fileA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotA) != "package a\n// pre-turn edit\n" {
+		t.Fatalf("a.go after restore = %q, want pre-turn state", string(gotA))
+	}
+	if _, err := os.Stat(fileB); !os.IsNotExist(err) {
+		t.Fatalf("expected b.go to be removed on restore, got err=%v", err)
+	}
+}
+
+func TestIndexTouchPath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "existing.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ix := NewIndex(root)
+	ix.Build()
+
+	newRel := "sub/added.go"
+	newAbs := filepath.Join(root, filepath.FromSlash(newRel))
+	if err := os.MkdirAll(filepath.Dir(newAbs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newAbs, []byte("package sub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ix.TouchPath(newRel)
+
+	files := ix.Files()
+	found := false
+	for _, f := range files {
+		if f.Path == newRel {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected %q in ix.Files() after TouchPath, got %+v", newRel, files)
+	}
+	subKids, ok := ix.Children("sub")
+	if !ok || len(subKids) != 1 || subKids[0].Path != newRel {
+		t.Fatalf("expected sub/added.go in ix.Children(\"sub\"), got %+v", subKids)
+	}
+
+	// Remove the file and verify TouchPath evicts it.
+	if err := os.Remove(newAbs); err != nil {
+		t.Fatal(err)
+	}
+	ix.TouchPath(newRel)
+	for _, f := range ix.Files() {
+		if f.Path == newRel {
+			t.Fatalf("expected %q to be removed from ix.Files() after deletion + TouchPath", newRel)
+		}
+	}
+}

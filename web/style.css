@@ -3641,3 +3641,135 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
   line-height: 1.5;
   color: var(--dim);
 }
+
+/* ---------- Code Review, Hunk Controls, Turn Revert & Inline Diagnostics ---------- */
+
+.diff-table {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 24px;
+}
+
+.diff-hunk-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diff-hunk-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-hunk-btn {
+  font: 10.5px var(--sans);
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: var(--bg3);
+  color: var(--dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+
+.diff-hunk-btn:hover {
+  background: var(--bg4);
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.diff-hunk-discard:hover {
+  color: var(--red, #f85149);
+  border-color: var(--red, #f85149);
+}
+
+.dcs-viewed {
+  font: 11px var(--sans);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--bg3);
+  color: var(--dim);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.dcs-viewed:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.dcs-viewed.active {
+  background: rgba(46, 160, 67, 0.16);
+  color: var(--green, #3fb950);
+  border-color: rgba(46, 160, 67, 0.45);
+}
+
+.dcs-hunk-btn {
+  width: auto;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+#tree .ti.file-viewed .name {
+  opacity: 0.55;
+}
+
+.c[data-diag]::after,
+.diff-code[data-diag]::after {
+  content: attr(data-diag);
+  margin-left: 16px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-style: italic;
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--red, #f85149);
+  border: 1px solid rgba(248, 81, 73, 0.28);
+  pointer-events: none;
+  white-space: pre;
+}
+
+.g.gut-diag-err {
+  color: var(--red, #f85149) !important;
+  font-weight: 600;
+}
+
+.g.gut-diag-warn {
+  color: var(--yellow, #d29922) !important;
+  font-weight: 600;
+}
+
+.thr-changed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 2px;
+}
+
+.thr-revert-btn {
+  font: 10.5px var(--sans);
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: var(--bg3);
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.thr-revert-btn:hover:not(:disabled) {
+  color: var(--red, #f85149);
+  border-color: var(--red, #f85149);
+}
+
+.thr-reverted-badge {
+  font: 10px var(--mono);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg3);
+  color: var(--faint);
+  border: 1px solid var(--line);
+}

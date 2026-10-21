@@ -57,6 +57,10 @@ export function updateEditorOptionControls() {
 
 let raf = 0;
 let renderedFirst = 0;
+let lastPaintKey = '';
+export function invalidatePaint() {
+  lastPaintKey = '';
+}
 export function render() {
   if (raf) return;
   raf = requestAnimationFrame(() => { raf = 0; paint(); });
@@ -69,12 +73,36 @@ export function paint() {
   const first = Math.max(0, Math.floor(top / LH) - OVERSCAN);
   const count = Math.ceil(vp.clientHeight / LH) + OVERSCAN * 2;
   const last = Math.min(d.total, first + count);
-  renderedFirst = first;
   ensureChunks(d, first, last);
 
-  let html = '';
   const gut = d.gutter || null;
   const agentRanges = (S.agentTargets || []).filter(t => t.path === d.path);
+  const agentKey = agentRanges.map(r => r.l1 + ':' + r.l2).join(',');
+  const findKey = S.find && S.find.hits.length ? S.find.q + ':' + S.find.cs + ':' + S.find.active + ':' + S.find.hits.length : '';
+  const linkKey = S.link ? S.link.line + ':' + S.link.col + ':' + S.link.word : '';
+  const gutKey = gut ? gut.marks.size + ':' + gut.dels.size : '';
+  const diagList = Array.isArray(d.diagnostics) ? d.diagnostics : [];
+  const diagKey = diagList.length ? diagList.length + ':' + diagList[0].line + ':' + diagList[0].message : '';
+  const paintKey = [
+    d.path, d.gen || 0, first, last, d.cur, S.occ || '',
+    findKey, linkKey, gutKey, diagKey, agentKey, S.selAll === d ? 1 : 0, S.wrap ? 1 : 0
+  ].join('|');
+
+  if (paintKey === lastPaintKey && rowsEl.children.length === Math.max(0, last - first)) {
+    placeCaret();
+    return;
+  }
+  lastPaintKey = paintKey;
+  renderedFirst = first;
+
+  const diagByLine = new Map();
+  for (const dg of diagList) {
+    if (!dg || !dg.line) continue;
+    const prev = diagByLine.get(dg.line);
+    if (!prev || (dg.severity || 1) < (prev.severity || 1)) diagByLine.set(dg.line, dg);
+  }
+
+  let html = '';
   for (let i = first; i < last; i++) {
     const n = i + 1;
     const body = d.lines[i];
@@ -87,8 +115,17 @@ export function paint() {
       if (m) gc += m === 'add' ? ' gut-add' : ' gut-mod';
       if (gut.dels.has(n)) rc += ' gut-del';
     }
+    const dg = diagByLine.get(n);
+    let cAttr = '';
+    if (dg) {
+      const isErr = (dg.severity || 1) === 1;
+      rc += isErr ? ' row-has-err' : ' row-has-warn';
+      gc += isErr ? ' gut-diag-err' : ' gut-diag-warn';
+      const label = '  — ' + (dg.source ? dg.source + ': ' : '') + (dg.message || '').split('\n')[0];
+      cAttr = ' data-diag="' + esc(label) + '" title="' + esc(dg.message || '') + '"';
+    }
     html += '<div class="' + rc + '" data-l="' + n + '">' +
-      '<div class="' + gc + '"><span class="line-btn" role="button" data-l="' + n + '" title="Thread and line actions">Edit</span>' + n + '</div><div class="c">' + (body === undefined ? '' : body) + '</div></div>';
+      '<div class="' + gc + '"><span class="line-btn" role="button" data-l="' + n + '" title="Thread and line actions">Edit</span>' + n + '</div><div class="c"' + cAttr + '>' + (body === undefined ? '' : body) + '</div></div>';
   }
   const sel = saveSelection();
   rowsEl.style.transform = 'translateY(' + (first * LH) + 'px)';
@@ -314,11 +351,13 @@ export function ensureChunks(d, first, last) {
   for (let c = c0; c <= c1; c++) {
     if (d.chunks.has(c) || d.pending.has(c)) continue;
     d.pending.add(c);
-    const gen = d.gen;
+    const reqGen = d.reqGen || 0;
     api('/api/file', { path: d.path, start: c * CHUNK, count: CHUNK })
       .then(j => {
-        if (gen !== d.gen) return; // superseded by a background highlight swap
+        if (reqGen !== (d.reqGen || 0)) return; // superseded by a reload
         for (let i = 0; i < j.lines.length; i++) d.lines[j.start + i] = j.lines[i];
+        if (Array.isArray(j.diagnostics)) d.diagnostics = j.diagnostics;
+        d.gen = (d.gen || 0) + 1;
         d.chunks.add(c); d.pending.delete(c);
         if (doc_() === d) render();
         if (j.refine) refineChunk(d, c);
@@ -347,6 +386,8 @@ export function refineChunk(d, c, delay = 800, tries = 0) {
     for (let i = 0; i < j.lines.length; i++) {
       if (d.lines[j.start + i] !== j.lines[i]) { d.lines[j.start + i] = j.lines[i]; changed = true; }
     }
+    if (Array.isArray(j.diagnostics)) d.diagnostics = j.diagnostics;
+    if (changed) d.gen = (d.gen || 0) + 1;
     if (changed && doc_() === d) render();
   }, delay);
 }

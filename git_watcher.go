@@ -163,9 +163,17 @@ func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
 	adaptiveInterval := 1 * time.Second
 	worktreeTicker := time.NewTicker(adaptiveInterval)
 	defer worktreeTicker.Stop()
+	unchangedStreak := 0
 
 	heartbeatTicker := time.NewTicker(15 * time.Second)
 	defer heartbeatTicker.Stop()
+
+	resetInterval := func(d time.Duration) {
+		if d != adaptiveInterval {
+			adaptiveInterval = d
+			worktreeTicker.Reset(adaptiveInterval)
+		}
+	}
 
 	for {
 		select {
@@ -177,7 +185,9 @@ func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
 		case <-metaTicker.C:
 			// Fast path: check .git metadata (HEAD, index, packed-refs).
 			// If touched by git CLI (commit, checkout, add, etc.), refresh immediately.
-			if gw.recordGitMeta(gitdir) {
+			if gw.active.Load() > 0 && gw.recordGitMeta(gitdir) {
+				unchangedStreak = 0
+				resetInterval(1 * time.Second)
 				gw.checkAndBroadcast()
 			}
 
@@ -187,19 +197,25 @@ func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
 			if gw.active.Load() > 0 {
 				metaDirty := gw.recordGitMeta(gitdir)
 				start := time.Now()
-				gw.refreshInternal(!metaDirty)
+				_, changed := gw.refreshInternal(!metaDirty)
 				dur := time.Since(start)
-				// Adapt interval based on execution speed: min 1s, max 10s.
+				if changed || metaDirty {
+					unchangedStreak = 0
+				} else if unchangedStreak < 4 {
+					unchangedStreak++
+				}
+				// Adapt interval based on execution speed and idle streak: min 1s, max 10s.
 				newInterval := dur * 5
+				backoff := time.Duration(1<<unchangedStreak) * time.Second
+				if backoff > newInterval {
+					newInterval = backoff
+				}
 				if newInterval < 1*time.Second {
 					newInterval = 1 * time.Second
 				} else if newInterval > 10*time.Second {
 					newInterval = 10 * time.Second
 				}
-				if newInterval != adaptiveInterval {
-					adaptiveInterval = newInterval
-					worktreeTicker.Reset(adaptiveInterval)
-				}
+				resetInterval(newInterval)
 			}
 
 		case <-gw.triggerCh:
@@ -210,10 +226,14 @@ func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
 			case <-gw.triggerCh:
 			default:
 			}
+			unchangedStreak = 0
+			resetInterval(1 * time.Second)
 			gw.checkAndBroadcast()
 
 		case <-heartbeatTicker.C:
-			gw.broadcast([]byte(": ping\n\n"))
+			if gw.active.Load() > 0 {
+				gw.broadcast([]byte(": ping\n\n"))
+			}
 		}
 	}
 }
@@ -221,10 +241,11 @@ func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
 // Refresh runs an immediate UpdateGitStatus, broadcasts to subscribers if changed,
 // and returns the latest git status payload.
 func (gw *GitWatcher) Refresh() GitStatusPayload {
-	return gw.refreshInternal(false)
+	p, _ := gw.refreshInternal(false)
+	return p
 }
 
-func (gw *GitWatcher) refreshInternal(worktreeOnly bool) GitStatusPayload {
+func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool) {
 	count, files, changed, statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs := gw.ix.UpdateGitStatus()
 	var recentCommits []GitCommit
 	var ahead, behind int
@@ -298,7 +319,7 @@ func (gw *GitWatcher) refreshInternal(worktreeOnly bool) GitStatusPayload {
 			gw.broadcast(msg)
 		}
 	}
-	return payload
+	return payload, changed
 }
 
 // aheadBehind counts local commits not yet on the remote. In a PR review the

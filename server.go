@@ -166,6 +166,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/git/refresh"), s.handleGitRefresh)
 	s.mux.HandleFunc(s.routePath("/api/git/stage"), s.handleGitStage)
 	s.mux.HandleFunc(s.routePath("/api/git/unstage"), s.handleGitUnstage)
+	s.mux.HandleFunc(s.routePath("/api/git/hunk"), s.handleGitHunk)
 	s.mux.HandleFunc(s.routePath("/api/git/commit"), s.handleGitCommit)
 	s.mux.HandleFunc(s.routePath("/api/git/commit-message"), s.handleGitCommitMessage)
 	s.mux.HandleFunc(s.routePath("/api/git/push"), s.handleGitPush)
@@ -186,6 +187,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/lsp/calls"), s.handleLSPCalls)
 	s.mux.HandleFunc(s.routePath("/api/lsp/symbols"), s.handleLSPSymbols)
 	s.mux.HandleFunc(s.routePath("/api/lsp/hover"), s.handleLSPHover)
+	s.mux.HandleFunc(s.routePath("/api/lsp/diagnostics"), s.handleLSPDiagnostics)
 	s.mux.HandleFunc(s.routePath("/api/lsp/warm"), s.handleLSPWarm)
 	s.mux.HandleFunc(s.routePath("/api/lsp/setup"), s.handleLSPSetup)
 	s.mux.HandleFunc(s.routePath("/api/lsp/install"), s.handleLSPInstall)
@@ -205,6 +207,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/threads/cancel"), s.handleThreadCancel)
 	s.mux.HandleFunc(s.routePath("/api/threads/scope"), s.handleThreadScope)
 	s.mux.HandleFunc(s.routePath("/api/threads/delete"), s.handleThreadDelete)
+	s.mux.HandleFunc(s.routePath("/api/threads/revert"), s.handleThreadRevert)
 	s.mux.HandleFunc(s.routePath("/api/threads/stream"), s.handleThreadStream)
 	s.mux.HandleFunc(s.routePath("/api/settings"), s.handleSettings)
 	s.mux.HandleFunc(s.routePath("/api/pr/meta"), s.handlePRMeta)
@@ -248,11 +251,15 @@ func NewServer(ix *Index, lsp *lspManager, basePaths ...string) *Server {
 // that is doing nothing look like it is holding hundreds of megabytes.
 func (s *Server) scavenge() {
 	const idleFor = 15 * time.Second
+	const lspIdleFor = 10 * time.Minute
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 	done := true // nothing to release before the first request
 	for range tick.C {
 		idle := time.Since(time.Unix(0, s.lastReq.Load()))
+		if s.lsp != nil && idle >= lspIdleFor {
+			s.lsp.ReapIdle(lspIdleFor)
+		}
 		if idle < idleFor {
 			done = false
 			continue
@@ -260,6 +267,7 @@ func (s *Server) scavenge() {
 		if done {
 			continue // already released since the last burst of work
 		}
+		render.Scavenge()
 		debug.FreeOSMemory()
 		done = true
 	}
@@ -1178,6 +1186,22 @@ func (s *Server) handleLSPSymbols(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"symbols": syms, "state": string(state), "server": server})
 }
 
+func (s *Server) handleLSPDiagnostics(w http.ResponseWriter, r *http.Request) {
+	abs, rel, ok := s.resolvePath(r.URL.Query().Get("path"))
+	if !ok {
+		fail(w, 400, "bad path")
+		return
+	}
+	diags := s.lsp.Diagnostics(abs, rel)
+	state, server := s.lsp.State(rel)
+	writeJSON(w, map[string]any{
+		"path":        rel,
+		"diagnostics": diags,
+		"state":       string(state),
+		"server":      server,
+	})
+}
+
 func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 	dir := strings.Trim(r.URL.Query().Get("dir"), "/")
 	kids, ok := s.ix.Children(dir)
@@ -1313,9 +1337,13 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	diffAvail := false
 	if gitAvailable(s.ix.Root()) {
 		if ref := q.Get("ref"); ref != "" {
-			// Pinned to one commit: what matters is whether that commit touched
-			// the file, not whether the working tree has since diverged.
-			diffAvail = gitDiffCommit(s.ix.Root(), rel, ref) != ""
+			if base := q.Get("base"); base != "" && validSHA(base) && validSHA(ref) {
+				diffAvail = gitDiffBetween(s.ix.Root(), rel, base, ref) != ""
+			} else {
+				// Pinned to one commit: what matters is whether that commit touched
+				// the file, not whether the working tree has since diverged.
+				diffAvail = gitDiffCommit(s.ix.Root(), rel, ref) != ""
+			}
 		} else if avail, ok := s.ix.HasDiffAvailable(rel, s.diffBase, s.pr != nil); ok {
 			diffAvail = avail
 		} else if s.pr != nil {
@@ -1326,7 +1354,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 			diffAvail = gitDiffAgainst(s.ix.Root(), rel, s.diffBase) != ""
 		}
 	}
-	writeJSON(w, map[string]any{
+	resp := map[string]any{
 		"path": rel, "lang": d.Lang, "total": d.Total, "maxCols": d.MaxCols,
 		"start": start, "lines": lines, "size": st.Size(),
 		"exact": exact, "refine": !exact && coming,
@@ -1334,7 +1362,16 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		"table":         table.IsTable(rel),
 		"diffAvailable": diffAvail,
 		"lsp":           s.lspBrief(rel),
-	})
+		"diagnostics":   s.lsp.Diagnostics(abs, rel),
+	}
+	if q.Get("raw") == "1" {
+		rawLines := make([]string, len(lines))
+		for i := range lines {
+			rawLines[i] = d.Raw(start + i + 1)
+		}
+		resp["raw"] = rawLines
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleClose(w http.ResponseWriter, r *http.Request) {
@@ -1503,10 +1540,10 @@ func (s *Server) handleFileSave(w http.ResponseWriter, r *http.Request) {
 		s.lsp.CloseDoc(abs, rel)
 		s.lsp.RefreshOpenDocs()
 	}
+	s.ix.TouchPath(rel)
 	if s.gitWatcher != nil {
 		s.gitWatcher.Trigger()
 	}
-	go s.ix.Build()
 
 	writeJSON(w, map[string]any{
 		"ok":   true,
@@ -1559,10 +1596,10 @@ func (s *Server) handleFSNew(w http.ResponseWriter, r *http.Request) {
 		render.Evict(abs)
 	}
 
+	s.ix.TouchPath(rel)
 	if s.gitWatcher != nil {
 		s.gitWatcher.Trigger()
 	}
-	s.ix.Build()
 
 	writeJSON(w, map[string]any{
 		"ok":   true,
@@ -1591,10 +1628,17 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	// diff that commit itself made to this file, frozen regardless of what has
 	// been edited since. Empty ref -> today's working-tree-vs-diffBase diff.
 	if ref := r.URL.Query().Get("ref"); ref != "" {
-		diff := gitDiffCommit(s.ix.Root(), rel, ref)
+		base := r.URL.Query().Get("base")
+		var diff string
+		if base != "" && validSHA(base) && validSHA(ref) {
+			diff = gitDiffBetween(s.ix.Root(), rel, base, ref)
+		} else {
+			diff = gitDiffCommit(s.ix.Root(), rel, ref)
+		}
 		writeJSON(w, map[string]any{
 			"path":      rel,
 			"ref":       ref,
+			"base":      base,
 			"diff":      diff,
 			"hunks":     render.HighlightDiff(rel, diff),
 			"available": diff != "",
@@ -1810,6 +1854,44 @@ func (s *Server) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
 		s.gitWatcher.Trigger()
 	}
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleGitHunk stages, unstages, or discards a single unified diff hunk
+// (POST {path, hunk, action}).
+func (s *Server) handleGitHunk(w http.ResponseWriter, r *http.Request) {
+	if !localPost(w, r) {
+		return
+	}
+	var body struct {
+		Path   string `json:"path"`
+		Hunk   string `json:"hunk"`
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil || body.Path == "" || body.Hunk == "" || body.Action == "" {
+		fail(w, http.StatusBadRequest, "path, hunk, and action are required")
+		return
+	}
+	abs, rel, ok := s.safePath(body.Path)
+	if !ok || rel == "" {
+		fail(w, http.StatusBadRequest, "bad path")
+		return
+	}
+	if err := gitApplyHunk(s.ix.Root(), rel, body.Hunk, body.Action); err != nil {
+		fail(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if body.Action == "discard" {
+		render.Evict(abs)
+		if s.lsp != nil {
+			s.lsp.CloseDoc(abs, rel)
+			s.lsp.RefreshOpenDocs()
+		}
+		s.ix.TouchPath(rel)
+	}
+	if s.gitWatcher != nil {
+		s.gitWatcher.Trigger()
+	}
+	writeJSON(w, map[string]any{"ok": true, "path": rel, "action": body.Action})
 }
 
 // handleGitCommit commits whatever is currently staged (POST {message}).

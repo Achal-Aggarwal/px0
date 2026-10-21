@@ -68,6 +68,19 @@ var lspSymbolKind = map[int]string{
 	26: "type",
 }
 
+// LSPDiagnostic represents a single compiler/linter diagnostic reported by a
+// language server via textDocument/publishDiagnostics.
+type LSPDiagnostic struct {
+	Line     int    `json:"line"`              // 1-based start line
+	EndLine  int    `json:"endLine,omitempty"` // 1-based end line
+	Col      int    `json:"col"`               // 0-based start character
+	EndCol   int    `json:"endCol,omitempty"`  // 0-based end character
+	Severity int    `json:"severity"`          // 1=Error, 2=Warning, 3=Info, 4=Hint
+	Message  string `json:"message"`
+	Source   string `json:"source,omitempty"`
+	Code     string `json:"code,omitempty"`
+}
+
 type rpcMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -115,10 +128,12 @@ type lspClient struct {
 	mu          sync.RWMutex
 	nextID      int64
 	pending     map[int64]chan rpcMessage
-	opened      map[string]int    // uri -> document version
-	openedText  map[string]string // uri -> last text sent (unchanged skip + incremental diffs)
-	syncGen     map[string]uint64 // uri -> generation of the latest syncDoc read that applied
-	syncGenNext atomic.Uint64     // dispenses syncDoc generations; no lock needed
+	opened      map[string]int             // uri -> document version
+	openedText  map[string]string          // uri -> last text sent (unchanged skip + incremental diffs)
+	syncGen     map[string]uint64          // uri -> generation of the latest syncDoc read that applied
+	diagnostics map[string][]LSPDiagnostic // uri -> latest published diagnostics
+	syncGenNext atomic.Uint64              // dispenses syncDoc generations; no lock needed
+	lastUsed    atomic.Int64               // unix nanos of most recent client interaction
 	dead        error
 
 	// writeCh feeds the dedicated writer goroutine. It is created with the
@@ -162,18 +177,21 @@ type lspClient struct {
 }
 
 func newLSPClient(def lspServerDef, root string) *lspClient {
-	return &lspClient{
+	c := &lspClient{
 		def: def, root: root,
-		pending:    map[int64]chan rpcMessage{},
-		opened:     map[string]int{},
-		openedText: map[string]string{},
-		syncGen:    map[string]uint64{},
-		encoding:   "utf-16",
-		writeCh:    make(chan writeReq, writeQueueCap),
-		deadCh:     make(chan struct{}),
-		readyCh:    make(chan struct{}),
-		logf:       func(string, ...any) {},
+		pending:     map[int64]chan rpcMessage{},
+		opened:      map[string]int{},
+		openedText:  map[string]string{},
+		syncGen:     map[string]uint64{},
+		diagnostics: map[string][]LSPDiagnostic{},
+		encoding:    "utf-16",
+		writeCh:     make(chan writeReq, writeQueueCap),
+		deadCh:      make(chan struct{}),
+		readyCh:     make(chan struct{}),
+		logf:        func(string, ...any) {},
 	}
+	c.lastUsed.Store(time.Now().UnixNano())
+	return c
 }
 
 func (c *lspClient) start(ctx context.Context) error {
@@ -375,6 +393,51 @@ func (c *lspClient) onNotification(msg rpcMessage) {
 				}
 			}
 		}
+	case "textDocument/publishDiagnostics":
+		var p struct {
+			URI         string `json:"uri"`
+			Diagnostics []struct {
+				Range    lspRange        `json:"range"`
+				Severity int             `json:"severity"`
+				Code     json.RawMessage `json:"code,omitempty"`
+				Source   string          `json:"source,omitempty"`
+				Message  string          `json:"message"`
+			} `json:"diagnostics"`
+		}
+		if json.Unmarshal(msg.Params, &p) != nil || p.URI == "" {
+			return
+		}
+		diags := make([]LSPDiagnostic, 0, len(p.Diagnostics))
+		for _, d := range p.Diagnostics {
+			sev := d.Severity
+			if sev <= 0 {
+				sev = 1
+			}
+			codeStr := strings.Trim(string(d.Code), `" `)
+			if codeStr == "null" {
+				codeStr = ""
+			}
+			diags = append(diags, LSPDiagnostic{
+				Line:     d.Range.Start.Line + 1,
+				EndLine:  d.Range.End.Line + 1,
+				Col:      d.Range.Start.Character,
+				EndCol:   d.Range.End.Character,
+				Severity: sev,
+				Message:  d.Message,
+				Source:   d.Source,
+				Code:     codeStr,
+			})
+		}
+		c.mu.Lock()
+		if c.diagnostics == nil {
+			c.diagnostics = map[string][]LSPDiagnostic{}
+		}
+		if len(diags) == 0 {
+			delete(c.diagnostics, p.URI)
+		} else {
+			c.diagnostics[p.URI] = diags
+		}
+		c.mu.Unlock()
 	}
 }
 
@@ -605,6 +668,7 @@ func (c *lspClient) notifyAsync(method string, params any) {
 }
 
 func (c *lspClient) call(ctx context.Context, method string, params any, out any) error {
+	c.lastUsed.Store(time.Now().UnixNano())
 	c.mu.Lock()
 	if c.dead != nil {
 		err := c.dead
@@ -715,7 +779,8 @@ func (c *lspClient) initialize(ctx context.Context) error {
 				},
 				// Order matters: servers pick the first format they support,
 				// and markdown is what carries the fenced signature block.
-				"hover": map[string]any{"contentFormat": []string{"markdown", "plaintext"}},
+				"hover":              map[string]any{"contentFormat": []string{"markdown", "plaintext"}},
+				"publishDiagnostics": map[string]any{"relatedInformation": false},
 			},
 			"window": map[string]any{"workDoneProgress": true},
 		},
@@ -807,6 +872,7 @@ func (c *lspClient) shutdown() {
 // same URI. If the file changed between the read and the didOpen, the next
 // syncDoc repairs it.
 func (c *lspClient) ensureOpen(abs, rel string) error {
+	c.lastUsed.Store(time.Now().UnixNano())
 	uri := pathToURI(abs)
 	// Fail fast on a dead client instead of doing file I/O for a didOpen
 	// that can never be sent.
