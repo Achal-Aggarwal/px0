@@ -358,3 +358,32 @@ func TestHighlightDiff(t *testing.T) {
 		t.Errorf("row 3 missing keyword or string class: %s", h.Rows[3].HTML)
 	}
 }
+
+func BenchmarkHighlightDiff(b *testing.B) {
+	diff := `@@ -10,3 +10,4 @@ func greet() {
+-	return "hello"
++	// new greeting
++	return "hello world"
+ }
+`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = HighlightDiff("greet.go", diff)
+	}
+}
+
+func BenchmarkNewDoc(b *testing.B) {
+	src := `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello, World!")
+}
+`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = NewDoc(src, "main.go")
+	}
+}
+

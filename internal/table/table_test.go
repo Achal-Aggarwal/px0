@@ -187,3 +187,25 @@ func TestTableTieBetweenSeparatorsKeepsTheExtension(t *testing.T) {
 		t.Errorf("tie picked %q, want the .csv comma", got)
 	}
 }
+
+func BenchmarkRenderTable(b *testing.B) {
+	src := `id,name,role,department,location,salary
+1,Alice,Engineer,Core,New York,150000
+2,Bob,Designer,UI,San Francisco,140000
+3,Charlie,Product,Core,Remote,160000
+4,Dana,DevOps,Infra,London,155000
+`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = Render(strings.NewReader(src), int64(len(src)), ',')
+	}
+}
+
+func BenchmarkSniffDelim(b *testing.B) {
+	data := []byte("id,name,role,department,location,salary\n1,Alice,Engineer,Core,New York,150000\n")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = SniffDelim(data, ',')
+	}
+}
+

@@ -182,3 +182,21 @@ func TestTelemetryDisabledWithoutKey(t *testing.T) {
 	tel.Track("session_started", nil)
 	tel.Close("normal")
 }
+
+func BenchmarkFilesBucket(b *testing.B) {
+	counts := []int{10, 250, 1500, 5000, 25000, 75000, 200000}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = FilesBucket(counts[i%len(counts)])
+	}
+}
+
+func BenchmarkTelemetryTrackDisabled(b *testing.B) {
+	tel := New("", "0.1.0", false)
+	props := map[string]any{"count": 42}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tel.Track("action", props)
+	}
+}
+

@@ -109,3 +109,69 @@ func TestIsBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestFuzzyLimitAndHeap(t *testing.T) {
+	t.Parallel()
+
+	paths := []string{
+		"a/b/c/server.go",
+		"server.go",
+		"src/server.go",
+		"pkg/net/server.go",
+		"cmd/server/server.go",
+		"internal/server.go",
+		"vendor/server.go",
+	}
+	items := make([]Item, len(paths))
+	for i, p := range paths {
+		items[i] = NewItem(p)
+	}
+
+	// Request limit of 3 when 7 matches exist - tests min-heap, worseResult and siftDownResult
+	res := Find(items, "server", 3)
+	if len(res) != 3 {
+		t.Fatalf("expected 3 results with limit 3, got %d", len(res))
+	}
+	// Best match should be top level server.go
+	if res[0].Path != "server.go" {
+		t.Errorf("expected top result 'server.go', got %q", res[0].Path)
+	}
+
+	// Test no limit (limit <= 0)
+	all := Find(items, "server", 0)
+	if len(all) != len(paths) {
+		t.Fatalf("expected %d results with limit 0, got %d", len(paths), len(all))
+	}
+}
+
+func BenchmarkFuzzyFind(b *testing.B) {
+	paths := []string{
+		"internal/server/http_server.go",
+		"cmd/px0/main.go",
+		"web/app.js",
+		"pkg/util/strings.go",
+		"vendor/github.com/x/http/server.go",
+		"httpserver.go",
+		"src/core/router.go",
+		"api/v1/endpoints.go",
+	}
+	items := make([]Item, len(paths))
+	for i, p := range paths {
+		items[i] = NewItem(p)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = Find(items, "httpserver", 5)
+	}
+}
+
+func BenchmarkScore(b *testing.B) {
+	item := NewItem("internal/server/http_server.go")
+	scratch := make([]int, 0, 64)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = Score("httpserver", "httpserver", item.Path, item.Lower, item.NameStart, scratch)
+	}
+}
+

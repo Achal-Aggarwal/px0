@@ -134,3 +134,31 @@ func TestIgnoreSetBasics(t *testing.T) {
 		t.Error("main.go should not be ignored")
 	}
 }
+
+func BenchmarkIgnoreMatch(b *testing.B) {
+	ig := New([]string{"build/", "*.tmp", "!keep.tmp", "docs/**/draft.md", "/only-root.txt", "node_modules/", "vendor/"})
+	paths := []string{
+		"src/main.go",
+		"build/out.js",
+		"a/b/keep.tmp",
+		"docs/x/y/draft.md",
+		"sub/only-root.txt",
+		"vendor/pkg/foo.go",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		p := paths[i%len(paths)]
+		_ = ig.Match(p, false)
+	}
+}
+
+func BenchmarkCompilePattern(b *testing.B) {
+	patterns := []string{"build/", "*.tmp", "docs/**/draft.md", "/only-root.txt", "node_modules/"}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		p := patterns[i%len(patterns)]
+		_, _ = CompilePattern(p)
+	}
+}
+
