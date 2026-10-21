@@ -928,6 +928,15 @@ func (s *Server) handleStatic(sub fs.FS, prefix string) http.Handler {
 
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	n, at, ms := s.ix.Stats()
+	inGit := gitAvailable(s.ix.Root())
+	if inGit && s.ix.Ready() {
+		s.ix.mu.RLock()
+		noStatus := s.ix.gitStatusMap == nil
+		s.ix.mu.RUnlock()
+		if noStatus {
+			s.ix.UpdateGitStatus()
+		}
+	}
 	gitCount, gitFiles := s.ix.GitChanges()
 	meta := map[string]any{
 		"root":        s.ix.Root(),
@@ -936,7 +945,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"indexMs":     ms,
 		"builtAt":     at,
 		"ready":       s.ix.Ready(),
-		"git":         gitAvailable(s.ix.Root()),
+		"git":         inGit,
 		"gitChanges":  gitCount,
 		"gitFiles":    gitFiles,
 		"forge":       s.forgeMeta(),
@@ -1831,8 +1840,11 @@ func (s *Server) handleGitStage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.gitWatcher != nil {
-		s.gitWatcher.Trigger()
+		payload := s.gitWatcher.Refresh()
+		writeJSON(w, payload)
+		return
 	}
+	s.ix.UpdateGitStatus()
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -1851,8 +1863,11 @@ func (s *Server) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.gitWatcher != nil {
-		s.gitWatcher.Trigger()
+		payload := s.gitWatcher.Refresh()
+		writeJSON(w, payload)
+		return
 	}
+	s.ix.UpdateGitStatus()
 	writeJSON(w, map[string]any{"ok": true})
 }
 

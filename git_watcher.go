@@ -63,6 +63,8 @@ type GitWatcher struct {
 	lastCommits    []GitCommit
 	lastCommitsURL string
 	hasMetaCache   bool
+	lastReady      bool
+	lastInGit      bool
 }
 
 // NewGitWatcher constructs a new GitWatcher attached to the given workspace index.
@@ -74,18 +76,23 @@ func NewGitWatcher(ix *Index) *GitWatcher {
 		triggerCh:      make(chan struct{}, 1),
 		stopCh:         make(chan struct{}),
 		lastHeadCommit: gitHeadCommit(ix.Root()),
+		lastReady:      ix.Ready(),
+		lastInGit:      gitAvailable(ix.Root()),
 	}
 	return gw
 }
 
 // Start begins the background monitoring goroutine.
 func (gw *GitWatcher) Start(ctx context.Context) {
-	if gitDisabled || !gitAvailable(gw.root) {
+	if gitDisabled {
 		return
 	}
 
-	gitdir := gitDir(gw.root)
-	gw.recordGitMeta(gitdir)
+	var gitdir string
+	if gitAvailable(gw.root) {
+		gitdir = gitDir(gw.root)
+		gw.recordGitMeta(gitdir)
+	}
 
 	go gw.loop(ctx, gitdir)
 }
@@ -185,16 +192,24 @@ func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
 		case <-metaTicker.C:
 			// Fast path: check .git metadata (HEAD, index, packed-refs).
 			// If touched by git CLI (commit, checkout, add, etc.), refresh immediately.
-			if gw.active.Load() > 0 && gw.recordGitMeta(gitdir) {
-				unchangedStreak = 0
-				resetInterval(1 * time.Second)
-				gw.checkAndBroadcast()
+			if gw.active.Load() > 0 {
+				if gitdir == "" && gitAvailable(gw.root) {
+					gitdir = gitDir(gw.root)
+				}
+				if gw.recordGitMeta(gitdir) {
+					unchangedStreak = 0
+					resetInterval(1 * time.Second)
+					gw.checkAndBroadcast()
+				}
 			}
 
 		case <-worktreeTicker.C:
 			// Worktree path: check for modifications in files outside git CLI.
 			// Only run when at least one client is actively listening.
 			if gw.active.Load() > 0 {
+				if gitdir == "" && gitAvailable(gw.root) {
+					gitdir = gitDir(gw.root)
+				}
 				metaDirty := gw.recordGitMeta(gitdir)
 				start := time.Now()
 				_, changed := gw.refreshInternal(!metaDirty)
@@ -246,12 +261,23 @@ func (gw *GitWatcher) Refresh() GitStatusPayload {
 }
 
 func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool) {
+	ready := gw.ix.Ready()
+	inGit := gitAvailable(gw.root)
 	count, files, changed, statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs := gw.ix.UpdateGitStatus()
+
+	gw.mu.Lock()
+	if ready != gw.lastReady || inGit != gw.lastInGit {
+		gw.lastReady = ready
+		gw.lastInGit = inGit
+		gw.hasMetaCache = false
+		changed = true
+	}
+	gw.mu.Unlock()
+
 	var recentCommits []GitCommit
 	var ahead, behind int
 	var rewritten bool
 	var branch, commitsURL string
-	inGit := gitAvailable(gw.root)
 	if inGit {
 		pushedHead := gw.ix.PushedHead()
 		gw.mu.Lock()
@@ -280,7 +306,7 @@ func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool
 			commitsURL = gitCommitsWebURL(gw.root, branch)
 
 			gw.mu.Lock()
-			if headCommit != gw.lastHeadCommit || ahead != gw.lastAhead || behind != gw.lastBehind || rewritten != gw.lastRewritten {
+			if headCommit != gw.lastHeadCommit || branch != gw.lastBranch || ahead != gw.lastAhead || behind != gw.lastBehind || rewritten != gw.lastRewritten {
 				gw.lastHeadCommit = headCommit
 				gw.lastAhead = ahead
 				gw.lastBehind = behind
@@ -291,7 +317,9 @@ func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool
 			gw.lastBranch = branch
 			gw.lastCommits = recentCommits
 			gw.lastCommitsURL = commitsURL
-			gw.hasMetaCache = true
+			if ready {
+				gw.hasMetaCache = true
+			}
 			gw.mu.Unlock()
 		}
 	}
@@ -357,11 +385,6 @@ func (gw *GitWatcher) broadcast(msg []byte) {
 func (gw *GitWatcher) Subscribe() (<-chan []byte, func()) {
 	ch := make(chan []byte, 16)
 
-	gw.mu.Lock()
-	gw.clients[ch] = struct{}{}
-	gw.active.Add(1)
-	gw.mu.Unlock()
-
 	// Immediately send current state to newly connected client
 	inGit := gitAvailable(gw.root)
 	var initialMsg []byte
@@ -385,6 +408,11 @@ func (gw *GitWatcher) Subscribe() (<-chan []byte, func()) {
 	if len(initialMsg) > 0 {
 		ch <- initialMsg
 	}
+
+	gw.mu.Lock()
+	gw.clients[ch] = struct{}{}
+	gw.active.Add(1)
+	gw.mu.Unlock()
 
 	cancel := func() {
 		gw.mu.Lock()

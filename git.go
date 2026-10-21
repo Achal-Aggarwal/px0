@@ -44,14 +44,33 @@ func gitProbe(root string) gitInfo {
 	gitMu.Lock()
 	defer gitMu.Unlock()
 	if info, ok := gitCache[root]; ok {
-		return info
+		if info.ok && info.gitdir != "" {
+			if _, err := os.Lstat(info.gitdir); err == nil {
+				return info
+			}
+		}
+		delete(gitCache, root)
 	}
 	var info gitInfo
 	if _, err := exec.LookPath("git"); err == nil {
-		if out, err := exec.Command("git", "-C", root, "rev-parse", "--show-toplevel").Output(); err == nil {
+		out, err := exec.Command("git", "-C", root, "rev-parse", "--show-toplevel").Output()
+		safeDir := false
+		if err != nil {
+			if out2, err2 := exec.Command("git", "-c", "safe.directory=*", "-C", root, "rev-parse", "--show-toplevel").Output(); err2 == nil {
+				out, err = out2, nil
+				safeDir = true
+			}
+		}
+		if err == nil {
 			top := strings.TrimSpace(string(out))
 			gd := filepath.Join(top, ".git")
-			if gdOut, err := exec.Command("git", "-C", root, "rev-parse", "--git-dir").Output(); err == nil {
+			var gdCmd *exec.Cmd
+			if safeDir {
+				gdCmd = exec.Command("git", "-c", "safe.directory=*", "-C", root, "rev-parse", "--git-dir")
+			} else {
+				gdCmd = exec.Command("git", "-C", root, "rev-parse", "--git-dir")
+			}
+			if gdOut, err := gdCmd.Output(); err == nil {
 				rawGd := strings.TrimSpace(string(gdOut))
 				if filepath.IsAbs(rawGd) {
 					gd = rawGd
@@ -60,9 +79,9 @@ func gitProbe(root string) gitInfo {
 				}
 			}
 			info = gitInfo{ok: true, toplevel: top, gitdir: gd}
+			gitCache[root] = info
 		}
 	}
-	gitCache[root] = info
 	return info
 }
 
@@ -392,7 +411,7 @@ func gitStage(root, relpath string) error {
 	if relpath == "" {
 		relpath = "."
 	}
-	out, err := exec.Command("git", "-C", root, "add", "--", relpath).CombinedOutput()
+	out, err := exec.Command("git", "-C", root, "add", "-A", "--", relpath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git add: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -401,8 +420,17 @@ func gitStage(root, relpath string) error {
 
 // gitUnstage removes relpath from the index without touching the working tree.
 func gitUnstage(root, relpath string) error {
-	out, err := exec.Command("git", "-C", root, "reset", "--", relpath).CombinedOutput()
+	if relpath == "" {
+		relpath = "."
+	}
+	out, err := exec.Command("git", "-C", root, "reset", "HEAD", "--", relpath).CombinedOutput()
 	if err != nil {
+		// On an unborn HEAD (a repository with no commits yet), `git reset`
+		// fails because HEAD does not resolve; `git rm --cached` removes the
+		// path from the index without touching the working tree.
+		if _, rmErr := exec.Command("git", "-C", root, "rm", "-r", "--cached", "--", relpath).CombinedOutput(); rmErr == nil {
+			return nil
+		}
 		return fmt.Errorf("git reset: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -586,6 +614,9 @@ func gitCommit(root, message string) error {
 func gitCurrentBranch(root string) string {
 	out, err := exec.Command("git", "-C", root, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
+		if sym, err2 := exec.Command("git", "-C", root, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err2 == nil {
+			return strings.TrimSpace(string(sym))
+		}
 		return ""
 	}
 	return strings.TrimSpace(string(out))
@@ -836,6 +867,12 @@ func gitDiffAgainst(root, relpath, base string) string {
 	}
 	out, err := exec.Command("git", "-C", root, "diff", "--no-color", base, "--", relpath).Output()
 	if err != nil {
+		if base == "HEAD" {
+			// Unborn HEAD (newly initialized repo with no commits yet): diff against the empty tree.
+			if out2, err2 := exec.Command("git", "-C", root, "diff", "--no-color", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "--", relpath).Output(); err2 == nil {
+				return string(out2)
+			}
+		}
 		return ""
 	}
 	return string(out)

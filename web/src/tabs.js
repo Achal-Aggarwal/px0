@@ -2,7 +2,7 @@
 import { $, esc, S, doc_, api, apiPost, LH, CHUNK, withKeys } from './state.js';
 import { emit } from './bus.js';
 import { vp, sizer, rowsEl, editor } from './ui.js';
-import { render, layout, refineChunk } from './renderer.js';
+import { render, layout, refineChunk, getLH, lineTopY } from './renderer.js';
 import { updateStatus, setStatusNote, refreshMetrics } from './status.js';
 import { pushHistory } from './history.js';
 import { warmLSP } from './lsp.js';
@@ -398,7 +398,8 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
 
 export function centerLine(n) {
   if (previewing()) { previewLine(n); return; }
-  const y = (n - 1) * LH - Math.max(0, vp.clientHeight / 2 - LH * 2);
+  const lh = getLH();
+  const y = lineTopY(n) - Math.max(0, vp.clientHeight / 2 - lh * 2);
   vp.scrollTop = Math.max(0, y);
 }
 
@@ -454,6 +455,9 @@ function closeTabs(indices) {
     }
     // Release large arrays to assist garbage collection
     closed.lines = null;
+    closed._wrap = null;
+    closed._lineCols = null;
+    closed._colsChunks?.clear?.();
     closed.chunks?.clear?.();
     closed.pending?.clear?.();
     closed.refining?.clear?.();

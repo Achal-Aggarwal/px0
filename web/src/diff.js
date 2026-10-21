@@ -69,14 +69,20 @@ export async function toggleDiff() {
   if (!S.meta?.git) return;
   const d = doc_();
   if (!d) return;
-  if (!d.diffMode && !d.diffAvailable) { setStatusNote('No diff — clean file or not a git repo', 4000); return; }
+  if (!d.diffMode && !d.diffAvailable) {
+    setStatusNote(S.meta?.git ? 'No diff — clean or untracked file' : 'No diff — clean file or not a git repo', 4000);
+    return;
+  }
   setDiffMode(d.diffMode ? 'source' : (layoutPref() || 'split'));
 }
 
 export async function setDiffMode(mode) {
   const d = doc_();
   if (!d) return;
-  if (mode !== 'source' && !d.diffAvailable) { setStatusNote('No diff — clean file or not a git repo', 4000); return; }
+  if (mode !== 'source' && !d.diffAvailable) {
+    setStatusNote(S.meta?.git ? 'No diff — clean or untracked file' : 'No diff — clean file or not a git repo', 4000);
+    return;
+  }
   if (mode === 'source') {
     d.diffMode = null;
     d.diffDismissed = true;

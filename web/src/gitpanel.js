@@ -14,7 +14,7 @@ import { refreshUnpushed } from './unpushed.js';
 import { openFile } from './tabs.js';
 import { on, emit } from './bus.js';
 import { commitFileRows, COMMIT_FILES_PAGE, loadCommitFiles, cachedCommitFiles } from './commitfiles.js';
-import { triggerRefresh } from './gitstream.js';
+import { handleGitStatus, triggerRefresh } from './gitstream.js';
 import { registerAgentPicker } from './agent.js';
 
 const panel = () => $('#git-panel');
@@ -51,7 +51,6 @@ export function initGitPanel() {
     });
   }
 
-  $('#git-stage-all')?.addEventListener('click', doStageAll);
   $('#git-commit')?.addEventListener('click', doCommit);
   $('#git-commit-msg')?.addEventListener('input', () => $('#git-commit-msg')?.classList.remove('warn-border'));
   $('#git-push')?.addEventListener('click', () => (rewritten ? confirmForcePush() : doPush()));
@@ -74,6 +73,10 @@ export function initGitPanel() {
   initCommitList();
   initNotice();
 
+  syncGitPanelMeta();
+}
+
+export function syncGitPanelMeta() {
   updateGitPanelVisibility();
   if (S.meta?.git) {
     fetchRecentCommits();
@@ -132,7 +135,10 @@ export function updateGitPanel(payload) {
   const commitBtn = $('#git-commit');
   if (commitBtn) {
     commitBtn.disabled = staged === 0;
-    commitBtn.title = staged === 0 ? 'Stage changes to commit' : 'Commit staged changes';
+    commitBtn.textContent = staged > 0 ? `Commit (${staged})` : 'Commit';
+    commitBtn.title = staged === 0
+      ? 'Tick modified files to stage them for commit'
+      : `Commit ${staged} staged file${staged > 1 ? 's' : ''}`;
   }
 
   // Push button is enabled only when there are unpushed commits (ahead > 0)
@@ -182,38 +188,19 @@ export function updateGitPanel(payload) {
 
 export async function stagePath(path) {
   try {
-    await apiPostJson('/api/git/stage', { path });
+    const res = await apiPostJson('/api/git/stage', { path });
+    if (res && res.git !== undefined) await handleGitStatus(res);
+    else await triggerRefresh();
   } catch (e) {
     showGitError('Could not stage', e.message);
-  }
-}
-
-async function doStageAll() {
-  const btn = $('#git-stage-all');
-  const prevText = btn?.textContent || 'Stage All';
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = 'Staging...';
-  }
-  try {
-    await apiPostJson('/api/git/stage', { path: '.' });
-    await triggerRefresh();
-    if (btn) {
-      btn.textContent = prevText;
-      flashActionSuccess(btn, 'Staged');
-    }
-  } catch (e) {
-    if (btn) btn.textContent = prevText;
-    showGitError('Could not stage', e.message);
-  } finally {
-    if (btn) btn.disabled = false;
   }
 }
 
 export async function unstagePath(path) {
   try {
-    await apiPostJson('/api/git/unstage', { path });
-    await triggerRefresh();
+    const res = await apiPostJson('/api/git/unstage', { path });
+    if (res && res.git !== undefined) await handleGitStatus(res);
+    else await triggerRefresh();
   } catch (e) {
     showGitError('Could not unstage', e.message);
   }
