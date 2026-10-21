@@ -9,18 +9,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"px0/internal/fuzzy"
+	"px0/internal/ignore"
 )
 
 // FileEntry represents a single indexed file in the workspace,
 // storing its relative path, name, size, and pre-computed lowercase representation
 // for fast fuzzy searching.
-type FileEntry struct {
-	Path      string `json:"path"` // Slash-separated path relative to workspace root
-	Name      string `json:"name"` // Basename of the file
-	Size      int64  `json:"size"` // File size in bytes
-	lower     string // Cached lowercase Path for fast case-insensitive matching
-	nameStart int    // Byte offset in Path where the basename begins
-}
+type FileEntry = fuzzy.Item
 
 // Node represents a file or directory entry in the hierarchical file tree view.
 type Node struct {
@@ -369,8 +366,8 @@ func sortNodes(kids []Node) {
 // the frontend can display the file tree without waiting for the full repo scan.
 func (ix *Index) Build() {
 	start := time.Now()
-	root := newIgnoreSet(nil)
-	root = root.Child(readGitignore(ix.root, ""))
+	root := ignore.New(nil)
+	root = root.Child(ignore.ReadGitignore(ix.root, ""))
 
 	// Git status is computed up front, before the walk, rather than
 	// concurrently with it. It used to run in a goroutine so its ~80ms
@@ -421,15 +418,15 @@ func (ix *Index) Build() {
 		sem      = make(chan struct{}, runtime.NumCPU()*4)
 	)
 
-	var walk func(abs, rel string, ig *ignoreSet)
-	walk = func(abs, rel string, ig *ignoreSet) {
+	var walk func(abs, rel string, ig *ignore.IgnoreSet)
+	walk = func(abs, rel string, ig *ignore.IgnoreSet) {
 		defer wg.Done()
 		ents, err := os.ReadDir(abs)
 		if err != nil {
 			return
 		}
 		if rel != "" {
-			if extra := readGitignore(abs, rel); len(extra) > 0 {
+			if extra := ignore.ReadGitignore(abs, rel); len(extra) > 0 {
 				ig = ig.Child(extra)
 			}
 		}
@@ -469,7 +466,7 @@ func (ix *Index) Build() {
 			kids = append(kids, Node{Name: name, Path: childRel, Size: info.Size(), Status: gs[childRel], Staged: staged[childRel], YourStatus: yourStatuses[childRel]})
 			localFiles = append(localFiles, FileEntry{
 				Path: childRel, Name: name, Size: info.Size(),
-				lower: toLowerIfNeeded(childRel), nameStart: len(childRel) - len(name),
+				Lower: toLowerIfNeeded(childRel), NameStart: len(childRel) - len(name),
 			})
 		}
 		sortNodes(kids)
@@ -512,7 +509,7 @@ func (ix *Index) Build() {
 			wg.Add(1)
 			select {
 			case sem <- struct{}{}:
-				go func(a, r string, g *ignoreSet) {
+				go func(a, r string, g *ignore.IgnoreSet) {
 					defer func() { <-sem }()
 					walk(a, r, g)
 				}(sd.abs, sd.rel, ig)

@@ -1,4 +1,4 @@
-package main
+package render
 
 import (
 	"container/list"
@@ -23,8 +23,9 @@ const (
 	// the lexer in the right state on entry (inside a block comment, a raw
 	// string); the trailing pad lets a construct that opens inside the window
 	// find its terminator instead of being reported as unterminated.
-	hlChunk   = 1000
-	hlContext = 400
+	ChunkLines = 1000
+	hlChunk    = ChunkLines
+	hlContext  = 400
 
 	// A window is measured in lines, but generated files exist with a handful
 	// of multi-megabyte lines, where a 1000-line window is the whole file. Cap
@@ -177,6 +178,10 @@ type Doc struct {
 	// several times its source size in rendered HTML.
 	key   string
 	bytes int
+}
+
+func NewDoc(src, rel string) *Doc {
+	return newDoc(src, rel)
 }
 
 func newDoc(src, rel string) *Doc {
@@ -574,6 +579,10 @@ func (c *hlCache) clear() {
 	c.used = 0
 }
 
+func IsBinary(b []byte) bool {
+	return isBinary(b)
+}
+
 func isBinary(b []byte) bool {
 	n := len(b)
 	if n > 8000 {
@@ -639,8 +648,12 @@ type DiffHunk struct {
 
 var diffHunkRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ \t]?(.*)$`)
 
-// highlightDiff parses unified diff text into hunks and tokenises each line
+// HighlightDiff parses unified diff text into hunks and tokenises each line
 // with the Chroma lexer matched for rel, returning structured hunks with HTML.
+func HighlightDiff(rel, diffText string) []DiffHunk {
+	return highlightDiff(rel, diffText)
+}
+
 func highlightDiff(rel, diffText string) []DiffHunk {
 	if diffText == "" {
 		return []DiffHunk{}
@@ -750,4 +763,3 @@ func highlightDiff(rel, diffText string) []DiffHunk {
 
 	return hunks
 }
-

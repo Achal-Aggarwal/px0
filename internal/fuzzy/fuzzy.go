@@ -11,6 +11,7 @@ import (
 type Item struct {
 	Path      string `json:"path"`
 	Name      string `json:"name"`
+	Size      int64  `json:"size"`
 	Lower     string `json:"-"`
 	NameStart int    `json:"-"`
 }

@@ -9,6 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"px0/internal/fuzzy"
+	"px0/internal/ignore"
+	"px0/internal/render"
 )
 
 func generateFileEntries(n int) []FileEntry {
@@ -22,8 +26,8 @@ func generateFileEntries(n int) []FileEntry {
 		entries[i] = FileEntry{
 			Path:      p,
 			Name:      name,
-			lower:     strings.ToLower(p),
-			nameStart: len(p) - len(name),
+			Lower:     strings.ToLower(p),
+			NameStart: len(p) - len(name),
 		}
 	}
 	return entries
@@ -35,7 +39,7 @@ func BenchmarkFuzzyFind_1K(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = FuzzyFind(files, query, 50)
+		_ = fuzzy.Find(files, query, 50)
 	}
 }
 
@@ -45,7 +49,7 @@ func BenchmarkFuzzyFind_10K(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = FuzzyFind(files, query, 50)
+		_ = fuzzy.Find(files, query, 50)
 	}
 }
 
@@ -55,7 +59,7 @@ func BenchmarkFuzzyFind_50K(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = FuzzyFind(files, query, 50)
+		_ = fuzzy.Find(files, query, 50)
 	}
 }
 
@@ -63,8 +67,8 @@ func BenchmarkFuzzyScore(b *testing.B) {
 	e := &FileEntry{
 		Path:      "internal/server/http_server.go",
 		Name:      "http_server.go",
-		lower:     "internal/server/http_server.go",
-		nameStart: 16,
+		Lower:     "internal/server/http_server.go",
+		NameStart: 16,
 	}
 	q := "httpserver"
 	origQ := "httpserver"
@@ -73,7 +77,7 @@ func BenchmarkFuzzyScore(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = fuzzyScore(q, origQ, e, pos)
+		_, _, _ = fuzzy.Score(q, origQ, e.Path, e.Lower, e.NameStart, pos)
 	}
 }
 
@@ -88,7 +92,7 @@ func BenchmarkIgnoreSetMatch(b *testing.B) {
 		"!build/keep.txt",
 		"vendor/",
 	}
-	ig := newIgnoreSet(patterns)
+	ig := ignore.New(patterns)
 	testPaths := []string{
 		"src/server/handler.go",
 		"build/output.js",
@@ -146,7 +150,7 @@ func NewWorkerPool(workers int) *WorkerPool {
 	return p
 }
 `
-	d := newDoc(src, "main.go")
+	d := render.NewDoc(src, "main.go")
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -170,7 +174,7 @@ def run_server(cfg: Config):
     if cfg.debug:
         print("Debug mode enabled")
 `
-	d := newDoc(src, "app.py")
+	d := render.NewDoc(src, "app.py")
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -183,7 +187,7 @@ func BenchmarkDocCreation(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = newDoc(src, "example.go")
+		_ = render.NewDoc(src, "example.go")
 	}
 }
 
@@ -241,7 +245,7 @@ func BenchmarkFuzzyFindShortQuery_50K(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = FuzzyFind(files, query, 50)
+		_ = fuzzy.Find(files, query, 50)
 	}
 }
 
@@ -250,7 +254,7 @@ func BenchmarkColdHighlight_Go(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		d := newDoc(src, "example.go")
+		d := render.NewDoc(src, "example.go")
 		_, _ = d.Lines(0, 300)
 	}
 }

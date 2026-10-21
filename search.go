@@ -13,6 +13,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+
+	"px0/internal/ignore"
+	"px0/internal/render"
+	"px0/internal/symbols"
 )
 
 // Match carries the hit already split into the text before it, the matched
@@ -119,7 +123,7 @@ type searcher struct {
 	opts      SearchOpts
 	re        *regexp.Regexp            // nil for the literal fast path
 	lit       []byte                    // literal needle (or prefilter), already case-folded if needed
-	glob      *rule                     // path filter, nil when every file is in scope
+	glob      *ignore.Rule              // path filter, nil when every file is in scope
 	defRes    map[string]*regexp.Regexp // legacy precompiled map (if set)
 	defQueryQ string                    // quoted identifier for lazy per-family decl regex compilation
 	defMu     sync.Mutex
@@ -132,7 +136,7 @@ func newSearcher(o SearchOpts) (*searcher, error) {
 	if o.Glob != "" {
 		// Match through the rule, not its regexp: a plain pattern such as
 		// "server.go" or "web/app.js" is answered without one at all.
-		if r, ok := compilePattern(o.Glob); ok {
+		if r, ok := ignore.CompilePattern(o.Glob); ok {
 			s.glob = &r
 		}
 	}
@@ -169,7 +173,7 @@ func newSearcher(o SearchOpts) (*searcher, error) {
 		}
 		s.lit = []byte(n)
 	}
-	if o.classifyDefs && identRe.MatchString(o.Query) {
+	if o.classifyDefs && symbols.IdentRe.MatchString(o.Query) {
 		s.defQueryQ = regexp.QuoteMeta(o.Query)
 		s.defByFam = make(map[string]*regexp.Regexp, 4)
 	}
@@ -183,13 +187,13 @@ func (s *searcher) defRegexForExt(ext string) *regexp.Regexp {
 	if s.defQueryQ == "" {
 		return nil
 	}
-	fam := familyFor(ext)
+	fam := symbols.FamilyFor(ext)
 	s.defMu.Lock()
 	defer s.defMu.Unlock()
 	if re, ok := s.defByFam[fam]; ok {
 		return re
 	}
-	re := compileDeclFamily(fam, s.defQueryQ)
+	re := symbols.CompileDeclFamily(fam, s.defQueryQ)
 	s.defByFam[fam] = re
 	return re
 }
@@ -480,7 +484,7 @@ func SearchContext(ctx context.Context, ix *Index, o SearchOpts) ([]FileMatches,
 					continue
 				}
 				data, err := readInto(filepath.Join(root, filepath.FromSlash(f.Path)), &w.read, f.Size)
-				if err != nil || isBinary(data) {
+				if err != nil || render.IsBinary(data) {
 					continue
 				}
 				if ctx.Err() != nil {
@@ -553,6 +557,6 @@ func unindexedTarget(root string, files []FileEntry, glob string) (FileEntry, bo
 	name := rel[strings.LastIndexByte(rel, '/')+1:]
 	return FileEntry{
 		Path: rel, Name: name, Size: st.Size(),
-		lower: strings.ToLower(rel), nameStart: len(rel) - len(name),
+		Lower: strings.ToLower(rel), NameStart: len(rel) - len(name),
 	}, true
 }
