@@ -53,6 +53,12 @@ export function initGitPanel() {
 
   $('#git-commit')?.addEventListener('click', doCommit);
   $('#git-commit-msg')?.addEventListener('input', () => $('#git-commit-msg')?.classList.remove('warn-border'));
+  $('#git-commit-msg')?.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      doCommit();
+    }
+  });
   $('#git-push')?.addEventListener('click', () => (rewritten ? confirmForcePush() : doPush()));
   $('#git-pull')?.addEventListener('click', doPull);
   $('#git-generate-msg')?.addEventListener('click', doCommitWithAI);
@@ -131,13 +137,13 @@ export function updateGitPanel(payload) {
     cleanState.hidden = hasChanges;
   }
 
-  // Commit button is only enabled when something is staged
+  // Commit button is enabled when there are changes or staged files
   const commitBtn = $('#git-commit');
   if (commitBtn) {
-    commitBtn.disabled = staged === 0;
+    commitBtn.disabled = !hasChanges;
     if (!commitBtn._flashTimer) commitBtn.textContent = 'Commit';
     commitBtn.title = staged === 0
-      ? 'Tick modified files to stage them for commit'
+      ? 'Commit all changes'
       : `Commit ${staged} staged file${staged > 1 ? 's' : ''}`;
   }
 
@@ -794,9 +800,12 @@ async function commitWithMessage(message, btn) {
 // Harnesses sometimes wrap output in a markdown code fence despite being
 // asked not to; strip that and surrounding whitespace before using it.
 function cleanCommitMessage(text) {
-  let t = text.trim();
-  const fence = t.match(/^```[a-z]*\n([\s\S]*?)\n```$/);
+  let t = (text || '').trim();
+  const fence = t.match(/```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n```/) || t.match(/^```([\s\S]*?)```$/);
   if (fence) t = fence[1].trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    t = t.slice(1, -1).trim();
+  }
   return t;
 }
 

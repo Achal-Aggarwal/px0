@@ -1210,6 +1210,10 @@ func (s *Server) handleFind(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	if !s.ix.Ready() {
+		s.ix.WaitReady(300 * time.Millisecond)
+	}
+	ready := s.ix.Ready()
 	res := fuzzy.Find(s.ix.Files(), q, limit)
 	if res == nil {
 		res = []fuzzy.Result{}
@@ -1218,7 +1222,7 @@ func (s *Server) handleFind(w http.ResponseWriter, r *http.Request) {
 		dur := ui.FmtDuration(time.Since(start))
 		ui.Status("info", "find", fmt.Sprintf("%q · %d files  (%s)", q, len(res), dur), 0, os.Stdout)
 	}
-	writeJSON(w, map[string]any{"results": res})
+	writeJSON(w, map[string]any{"results": res, "indexing": !ready})
 }
 
 var imageExt = map[string]bool{
@@ -1890,7 +1894,11 @@ func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "message is required")
 		return
 	}
-	if err := gitCommit(s.ix.Root(), strings.TrimSpace(body.Message)); err != nil {
+	root := s.ix.Root()
+	if len(gitStagedPaths(root)) == 0 && gitHasUncommittedChanges(root) {
+		_ = gitStage(root, ".")
+	}
+	if err := gitCommit(root, strings.TrimSpace(body.Message)); err != nil {
 		fail(w, http.StatusBadGateway, err.Error())
 		return
 	}

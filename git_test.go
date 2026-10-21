@@ -2211,3 +2211,48 @@ func TestGitInitAfterProbeAndWatcherReady(t *testing.T) {
 		t.Fatalf("expected hello.txt unstaged on unborn HEAD, got %v", staged)
 	}
 }
+
+func TestGitCommitAutoStage(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := gitRepo(t)
+	// Unstage everything so nothing is staged
+	if out, err := exec.Command("git", "-C", root, "reset").CombinedOutput(); err != nil {
+		t.Fatalf("git reset: %v (%s)", err, out)
+	}
+	// Add an uncommitted modification
+	if err := os.WriteFile(filepath.Join(root, "untracked.txt"), []byte("new file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ix := NewIndex(root)
+	ix.Build()
+	s := NewServer(ix, nil)
+
+	if len(gitStagedPaths(root)) != 0 {
+		t.Fatalf("expected nothing staged before commit")
+	}
+
+	body := bytes.NewBufferString(`{"message":"auto staged commit"}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/git/commit", body)
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "http://127.0.0.1:7777")
+	s.handleGitCommit(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleGitCommit status code = %d; body = %s", w.Code, w.Body.String())
+	}
+
+	// Verify working tree is clean and commit succeeded
+	if gitHasUncommittedChanges(root) {
+		t.Fatalf("expected working tree clean after commit")
+	}
+	out, err := exec.Command("git", "-C", root, "log", "-1", "--pretty=%s").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(out)) != "auto staged commit" {
+		t.Fatalf("expected commit subject 'auto staged commit', got %q", strings.TrimSpace(string(out)))
+	}
+}

@@ -23,7 +23,7 @@ import { handleVimKeyDown, isVimEnabled, getVimMode, showVimHelp, closeVimHelp }
 import { handleImageKey } from './imageview.js';
 import { submitBatch } from './agent.js';
 import { reindexWorkspace } from './panels.js';
-import { enterEditMode, exitEditMode, saveActiveFile } from './editview.js';
+import { enterEditMode, exitEditMode, saveActiveFile, editTextarea } from './editview.js';
 import { navigateToTips } from './tips.js';
 
 /* Each entry lists alternative combos, written as for keyLabel in state.js so
@@ -123,7 +123,12 @@ export function initShortcuts() {
       if (!overlay.hidden) { closePalette(); return; }
       if (!$('#helpsheet').hidden) { $('#helpsheet').hidden = true; return; }
       if (!hovercard.hidden) { clearLink(); return; }
-      if (!findbar.hidden) { clearFind(); return; }
+      if (!findbar.hidden) {
+        clearFind();
+        const d = doc_();
+        if (d?.isEditing && editTextarea) editTextarea.focus();
+        return;
+      }
       if (S.selAll) { clearSelectAll(); return; }
       if (!document.body.classList.contains('right-hidden')) { hideRightInspector(); return; }
       if (S.occ) { S.occ = null; paint(); return; }

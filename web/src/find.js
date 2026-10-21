@@ -6,6 +6,7 @@ import { render, paint, getLH, lineTopY } from './renderer.js';
 import { centerLine } from './tabs.js';
 import { updateStatus } from './status.js';
 import { mdview, previewing, findInPreview, showPreviewHit, clearPreviewMarks, previewHitOffsets, scrollPreviewTo } from './markdown.js';
+import { centerEditLine, editTextarea } from './editview.js';
 
 export const findbar = $('#findbar');
 export const findInput = $('#find-input');
@@ -14,6 +15,16 @@ const findCase = $('#find-case');
 /* Text currently selected inside the editor viewport, reduced to its first
    non-empty line since find matches within a single line. */
 function editorSelection() {
+  const d = doc_();
+  if (d?.isEditing && editTextarea) {
+    const s = editTextarea.selectionStart;
+    const e = editTextarea.selectionEnd;
+    if (s !== undefined && e !== undefined && s !== e) {
+      const txt = editTextarea.value.substring(s, e);
+      const line = txt.split(/\r?\n/).find(l => l.trim());
+      if (line) return line.trim();
+    }
+  }
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
   const at = sel.getRangeAt(0).commonAncestorContainer;
@@ -57,6 +68,37 @@ export const runFind = debounce(async () => {
     return;
   }
   if (!q) { S.find = null; $('#find-count').textContent = '0'; $('#minimap-hits').innerHTML = ''; paint(); return; }
+
+  if (d.isEditing && editTextarea) {
+    const text = editTextarea.value;
+    const lines = text.split('\n');
+    const needle = cs ? q : q.toLowerCase();
+    const hits = [];
+    let charOffset = 0;
+    for (let li = 0; li < lines.length; li++) {
+      const lineStr = lines[li];
+      const haystack = cs ? lineStr : lineStr.toLowerCase();
+      let col = 0;
+      let n = 0;
+      while ((col = haystack.indexOf(needle, col)) !== -1) {
+        hits.push({
+          line: li + 1,
+          n,
+          start: charOffset + col,
+          end: charOffset + col + q.length,
+        });
+        n++;
+        col += needle.length;
+      }
+      charOffset += lineStr.length + 1;
+    }
+    S.find = { q, cs, hits, byLine: new Set(hits.map(h => h.line)), active: hits.length ? 0 : -1, editing: true };
+    $('#find-count').textContent = hits.length ? '1 / ' + hits.length : 'no results';
+    drawMinimap(hits, lines.length);
+    if (hits.length) jumpToHit(0);
+    return;
+  }
+
   let j;
   try { j = await api('/api/search', { q, glob: d.path, case: cs ? 1 : '' }); } catch { return; }
   const f = (j.results || []).find(r => r.path === d.path);
@@ -101,10 +143,15 @@ export function jumpToHit(i) {
   }
   const h = S.find.hits[S.find.active];
   d.cur = h.line;
+  $('#find-count').textContent = (S.find.active + 1) + ' / ' + n;
+  if (d.isEditing && editTextarea) {
+    centerEditLine(h.line, h.start, h.end);
+    updateStatus();
+    return;
+  }
   const lh = getLH();
   const y = lineTopY(h.line, d);
   if (y < vp.scrollTop + lh * 2 || y > vp.scrollTop + vp.clientHeight - lh * 3) centerLine(h.line);
-  $('#find-count').textContent = (S.find.active + 1) + ' / ' + n;
   render(); updateStatus();
 }
 
@@ -120,7 +167,12 @@ export function initFind() {
   findInput.addEventListener('input', runFind);
   findInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); jumpToHit(S.find ? S.find.active + (e.shiftKey ? -1 : 1) : 0); }
-    if (e.key === 'Escape') { clearFind(); vp.focus(); }
+    if (e.key === 'Escape') {
+      clearFind();
+      const d = doc_();
+      if (d?.isEditing && editTextarea) editTextarea.focus();
+      else vp.focus();
+    }
   });
   findCase.addEventListener('click', () => { findCase.classList.toggle('on'); runFind(); });
   $('#find-next').addEventListener('click', () => jumpToHit(S.find ? S.find.active + 1 : 0));
@@ -131,7 +183,7 @@ export function initFind() {
     const d = doc_(); if (!d || !r.height || !d.total) return;
     if (previewing(d)) { scrollPreviewTo((e.clientY - r.top) / r.height); return; }
     centerLine(Math.round((e.clientY - r.top) / r.height * d.total));
-    render();
+    if (!d.isEditing) render();
   });
   on('tab:activated', clearFind);
 }

@@ -140,6 +140,16 @@ func (ix *Index) Ready() bool {
 	}
 }
 
+// WaitReady waits up to timeout for the index build to complete.
+func (ix *Index) WaitReady(timeout time.Duration) bool {
+	select {
+	case <-ix.readyCh:
+		return true
+	case <-time.After(timeout):
+		return ix.Ready()
+	}
+}
+
 // Stats returns the total indexed file count, the timestamp of the build, and duration in milliseconds.
 func (ix *Index) Stats() (files int, builtAt time.Time, ms int64) {
 	ix.mu.RLock()

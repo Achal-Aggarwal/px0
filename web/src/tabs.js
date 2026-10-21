@@ -15,7 +15,7 @@ import { clearSelectAll } from './selbar.js';
 import { syncPreview, previewing, previewLine } from './markdown.js';
 import { syncDiffView, layoutPref, diffScrollTop, setDiffMode, setSourceJumpHandler, setCommitStepHandler, scrollDiffToLine } from './diff.js';
 import { syncImageView } from './imageview.js';
-import { syncEditUI, editTextarea, updateGutter } from './editview.js';
+import { syncEditUI, editTextarea, updateGutter, centerEditLine } from './editview.js';
 
 // Recently closed files, newest last, for Alt+Shift+T.
 const closedTabs = [];
@@ -200,14 +200,14 @@ export async function openFile(path, opts = {}) {
   warmLSP(d);
   drawTabs(); drawCrumbs(); layout();
 
+  syncEditUI();
   if (line) {
     d.cur = line;
     if (d.diffMode) scrollDiffToLine(line);
     else centerLine(line);
-  } else if (!d.diffMode) {
+  } else if (!d.diffMode && !d.isEditing) {
     vp.scrollTop = d.scrollTop;
   }
-  syncEditUI();
   render();
   updateStatus();
   if ($('#panel-outline')?.classList.contains('active')) loadOutline();
@@ -397,6 +397,11 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
 }
 
 export function centerLine(n) {
+  const d = doc_();
+  if (d?.isEditing) {
+    centerEditLine(n);
+    return;
+  }
   if (previewing()) { previewLine(n); return; }
   const lh = getLH();
   const y = lineTopY(n) - Math.max(0, vp.clientHeight / 2 - lh * 2);

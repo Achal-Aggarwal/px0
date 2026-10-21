@@ -1716,3 +1716,50 @@ func BenchmarkHandleFileScrollChunk(b *testing.B) {
 		srv.handleFile(w, req)
 	}
 }
+
+func TestFindIndexingStatus(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "testfile.txt"), []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ix := NewIndex(root)
+	srv := NewServer(ix, nil)
+
+	// Before indexing: indexing should be true and files empty
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/find?q=test", nil)
+	srv.handleFind(w, req)
+
+	var payload struct {
+		Results  []any `json:"results"`
+		Indexing bool  `json:"indexing"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode find response: %v", err)
+	}
+	if !payload.Indexing {
+		t.Fatalf("expected indexing: true before build")
+	}
+
+	// Build index
+	ix.Build()
+
+	// After indexing: indexing should be false and results found
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/api/find?q=testfile", nil)
+	srv.handleFind(w2, req2)
+
+	var payload2 struct {
+		Results  []any `json:"results"`
+		Indexing bool  `json:"indexing"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &payload2); err != nil {
+		t.Fatalf("decode find response 2: %v", err)
+	}
+	if payload2.Indexing {
+		t.Fatalf("expected indexing: false after build")
+	}
+	if len(payload2.Results) == 0 {
+		t.Fatalf("expected results after build, got 0")
+	}
+}
