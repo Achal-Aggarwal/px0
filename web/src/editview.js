@@ -365,6 +365,13 @@ export function initEditView() {
         drawTabs();
       }
     }
+    if (S.find && S.find.editing) {
+      S.find = null;
+      const cnt = $('#find-count');
+      if (cnt) cnt.textContent = '—';
+      const mm = $('#minimap-hits');
+      if (mm) mm.innerHTML = '';
+    }
     if (S.wrap) scheduleUpdateGutter();
     else updateGutter();
   });

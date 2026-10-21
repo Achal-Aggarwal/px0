@@ -22,12 +22,12 @@ All 11 packages in `px0` achieve **100% Package Test and Benchmark Coverage**:
 | Package | Statement Coverage | Test Files | Primary Focus & Capabilities Tested |
 | :--- | :--- | :--- | :--- |
 | **`px0` (root core)** | **>62%** (54% short) | 7 test files | HTTP server routing, Git porcelain/diff parsing, LSP client, multi-repo workbench, forge providers (GitHub, GitLab, Gitea, Bitbucket), chat threads, AI agent harnesses. |
-| **`internal/fuzzy`** | **94.2%** | `fuzzy_test.go` | Two-pass bounded fuzzy path finder, score calculation, min-heap top-K pruning (`worseResult`, `siftDownResult`), boundary detection. |
-| **`internal/symbols`**| **98.5%** | `symbols_test.go`| Multi-language outline parser (Go, Python, JS/TS, Rust, C/C++, Java, Ruby, Shell, PHP, Lua, Zig, Elixir, Markdown), symbol regex trees, indent calculation. |
-| **`internal/table`**  | **82.5%** | `table_test.go`  | CSV/TSV table rendering, ragged rows, quoted cell line wrapping, delimiter sniffing (`SniffDelim`). |
+| **`internal/fuzzy`** | **100.0%** | `fuzzy_test.go` | Two-pass bounded fuzzy path finder, score calculation, min-heap top-K pruning (`worseResult`, `siftDownResult`), boundary detection. |
+| **`internal/symbols`**| **100.0%** | `symbols_test.go`| Multi-language outline parser (Go, Python, JS/TS, Rust, C/C++, Java, Ruby, Shell, PHP, Lua, Zig, Elixir, Markdown), symbol regex trees, indent calculation. |
+| **`internal/table`**  | **100.0%** | `table_test.go`  | CSV/TSV table rendering, ragged rows, quoted cell line wrapping, delimiter sniffing (`SniffDelim`). |
 | **`internal/render`** | **78.0%** | `render_test.go` | Chroma syntax highlighting, windowed viewport lexing, unified diff coloration, GitHub-Flavored Markdown transformation. |
-| **`internal/telemetry`** | **77.7%** | `telemetry_test.go` | PostHog telemetry event dispatch, session lifecycle, anonymous device ID management, file bucket categorization. |
-| **`internal/ignore`** | **76.0%** | `ignore_test.go` | Gitignore pattern compilation, fast-path segment shortcuts matching regex references, directory-only rule filtering. |
+| **`internal/ignore`** | **98.4%** | `ignore_test.go` | Gitignore pattern compilation, fast-path segment shortcuts matching regex references, directory-only rule filtering. |
+| **`internal/telemetry`** | **87.4%** | `telemetry_test.go` | PostHog telemetry event dispatch, session lifecycle, anonymous device ID management, file bucket categorization. |
 | **`internal/settings`**| **67.0%** | `settings_test.go`| Persistent settings schema, atomic file saving, deep map merging, raw JSON round-trip validation. |
 | **`internal/ui`**     | **66.9%** | `ui_test.go`      | ANSI color painting, TTY detection, spinner animation, status headers, byte/duration formatting helpers. |
 | **`internal/metrics`**| **63.4%** | `metrics_test.go` | Process resident set size (RSS), peak memory tracking, CPU usage sampling across platforms. |

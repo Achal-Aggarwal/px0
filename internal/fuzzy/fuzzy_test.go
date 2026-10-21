@@ -145,6 +145,60 @@ func TestFuzzyLimitAndHeap(t *testing.T) {
 	}
 }
 
+func TestFuzzyCamelCaseAndHeapDirect(t *testing.T) {
+	t.Parallel()
+
+	// 1. CamelCase hump test
+	camelItem := NewItem("fooBarBaz.go")
+	s1, _, ok1 := Score("bb", "bb", camelItem.Path, camelItem.Lower, camelItem.NameStart, nil)
+	if !ok1 || s1 <= 0 {
+		t.Fatalf("expected positive score for camelCase hump, got %d", s1)
+	}
+
+	// 2. worseResult ties and comparisons
+	r1 := Result{Score: 10, Path: "z.go"}
+	r2 := Result{Score: 10, Path: "a.go"}
+	r3 := Result{Score: 5, Path: "m.go"}
+	if !worseResult(r1, r2) {
+		t.Errorf("expected r1 to be worse than r2 due to path tie-break")
+	}
+	if worseResult(r2, r1) {
+		t.Errorf("expected r2 not to be worse than r1")
+	}
+	if !worseResult(r3, r1) {
+		t.Errorf("expected r3 to be worse than r1 due to lower score")
+	}
+
+	// 3. siftDownResult branches: right < left, left >= n, swap
+	h := []Result{
+		{Score: 100, Path: "root"},
+		{Score: 10, Path: "left"},
+		{Score: 5, Path: "right"},
+		{Score: 20, Path: "c1"},
+		{Score: 30, Path: "c2"},
+	}
+	siftDownResult(h, 0)
+	if h[0].Score != 5 {
+		t.Errorf("expected root score to be 5 after siftDown, got %d", h[0].Score)
+	}
+
+	// siftDown on leaf
+	siftDownResult(h, len(h)-1)
+
+	// 4. Find with empty items
+	emptyRes := Find([]Item{}, "test", 10)
+	if len(emptyRes) != 0 {
+		t.Errorf("expected 0 results, got %d", len(emptyRes))
+	}
+
+	// 5. Find with > 1024 items to trigger multi-worker, worker bounds, and all[:limit]
+	largeSet := generateBenchItems(2048)
+	limited := Find(largeSet, "server", 5)
+	if len(limited) != 5 {
+		t.Errorf("expected 5 results from multi-worker search, got %d", len(limited))
+	}
+}
+
 func BenchmarkFuzzyFind(b *testing.B) {
 	paths := []string{
 		"internal/server/http_server.go",

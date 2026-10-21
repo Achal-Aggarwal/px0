@@ -1,6 +1,8 @@
 package ignore
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -132,6 +134,52 @@ func TestIgnoreSetBasics(t *testing.T) {
 	}
 	if set.Match("main.go", false) {
 		t.Error("main.go should not be ignored")
+	}
+
+	// Test Child empty and with patterns
+	sameChild := set.Child(nil)
+	if sameChild != set {
+		t.Error("expected same set when patterns empty")
+	}
+	subChild := set.Child([]string{"*.subtmp"})
+	if !subChild.Match("test.subtmp", false) {
+		t.Error("expected subChild to match *.subtmp")
+	}
+
+	// Test literalHead fallback
+	if got := literalHead("foo/bar"); got != "foo/bar" {
+		t.Errorf("expected 'foo/bar', got %q", got)
+	}
+
+	// Test CompilePattern edge cases
+	if _, ok := CompilePattern(""); ok {
+		t.Error("expected empty pattern to not compile")
+	}
+	if _, ok := CompilePattern("   "); ok {
+		t.Error("expected whitespace pattern to not compile")
+	}
+	if _, ok := CompilePattern("# a comment"); ok {
+		t.Error("expected comment pattern to not compile")
+	}
+
+	// Test ReadGitignore nonexistent
+	if res := ReadGitignore("/nonexistent-path-px0", ""); res != nil {
+		t.Errorf("expected nil for nonexistent gitignore, got %v", res)
+	}
+
+	// Test ReadGitignore with valid file
+	tempDir := t.TempDir()
+	content := []byte("\n# comment\nfoo\n!bar\n/baz\n!/qux\n")
+	if err := os.WriteFile(filepath.Join(tempDir, ".gitignore"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	rootPats := ReadGitignore(tempDir, "")
+	if len(rootPats) != 4 || rootPats[0] != "foo" || rootPats[1] != "!bar" || rootPats[2] != "/baz" || rootPats[3] != "!/qux" {
+		t.Errorf("unexpected root patterns: %v", rootPats)
+	}
+	scopedPats := ReadGitignore(tempDir, "sub/dir")
+	if len(scopedPats) != 4 || scopedPats[0] != "sub/dir/foo" || scopedPats[1] != "!sub/dir/bar" || scopedPats[2] != "sub/dir/baz" || scopedPats[3] != "!sub/dir/qux" {
+		t.Errorf("unexpected scoped patterns: %v", scopedPats)
 	}
 }
 

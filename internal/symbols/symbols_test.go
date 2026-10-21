@@ -84,6 +84,10 @@ func TestCompileDeclFamily(t *testing.T) {
 		t.Errorf("expected nil for nonexistent family, got %v", re)
 	}
 
+	if reInvalid := CompileDeclFamily("go", "[invalid-regex("); reInvalid != nil {
+		t.Errorf("expected nil for invalid regex compilation, got %v", reInvalid)
+	}
+
 	reGo := CompileDeclFamily("go", "MyFunc")
 	if reGo == nil {
 		t.Fatal("expected compiled regex for go MyFunc")
